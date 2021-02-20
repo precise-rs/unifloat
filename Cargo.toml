@@ -1,0 +1,16 @@
+[package]
+name = "precise_float"
+version = "0.1.0"
+authors = ["Peter Kehl <peter.kehl@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+twofloat = "0.4.1"
+gmp-mpfr-sys = "1.4.3"
+
+[dependencies.gmp-mpfr-sys]
+version = "~1.4"
+default-features = false
+features = ["mpfr"]
