@@ -13,9 +13,15 @@ use {core::ops, gmp_mpfr_sys::mpfr};
 /// S<=2, use negative values instead: S=-1 or S=-2. You may want that if the
 /// exponent is outside standard f32/f64 exponent range!
 
-/// Functions here whose names end with _parts_length(s: isize) -> usize
+/// Difference to MPFR: Default value of a new MPFR float is NaN.
+/// However, we follow Rust's float default, which is 0.
+
+/// `const fun` functions here whose names end with _parts_length(s: isize) -> usize
 /// return the number of entries/slots of the respective type (f32, f64...) to
 /// be used by the respective parts. (Not a number of bytes.)
+/// Types and const genereric bounds are based on
+/// https://github.com/rust-lang/rust/issues/68436. However, not all
+//// tips from that discussion work with 1.52.0-nightly.
 
 /// Public, otherwise we were getting "private type `fn(isize) -> usize {f32_parts_length}` in public interface (error E0446)"
 pub const fn f32_parts_length(s: isize) -> usize {
@@ -64,7 +70,7 @@ pub const fn mpfr_header_parts_length(s: isize) -> usize {
     }
 }
 // TODO
-type MpfrHeaderParts<const S: isize> = [u128; mpfr_header_parts_length(S)];
+type MpfrHeaderParts<const S: isize> = [u128;/*mpfr::mpfr_t;*/ mpfr_header_parts_length(S)];
 
 /// Always return 0. This asserts that given s is acceptable.
 pub const fn assert_any_significand_part_length_is_acceptable(s: isize) -> usize {
@@ -80,7 +86,7 @@ pub struct Float<const S: isize> where
 [f64; f64_parts_length(S)]: Sized,
 [twofloat::TwoFloat; two_float_parts_length(S)]: Sized,
 [u64; mpfr_significand_64b_parts_length(S)]: Sized,
-[u128; mpfr_header_parts_length(S)]: Sized,
+[u128/*mpfr::mpfr_t*/; mpfr_header_parts_length(S)]: Sized,
 ConstAssert<{assert_any_significand_part_length_is_acceptable(S)}>:,
 [u8; assert_any_significand_part_length_is_acceptable(S)]: Sized
 //[u64; (S+2) as usize]:

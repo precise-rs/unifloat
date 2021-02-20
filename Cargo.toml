@@ -8,7 +8,6 @@ edition = "2018"
 
 [dependencies]
 twofloat = "0.4.1"
-gmp-mpfr-sys = "1.4.3"
 
 [dependencies.gmp-mpfr-sys]
 version = "~1.4"
