@@ -1,5 +1,5 @@
 #![allow(incomplete_features)]
-#![feature(const_generics, const_evaluatable_checked, const_panic, const_mut_refs)]
+#![feature(const_generics, const_evaluatable_checked, const_panic, int_bits_const)]
 
 use {core::ops, core::ptr, core::mem, std::num, gmp_mpfr_sys::{mpfr, gmp}};
 
@@ -20,11 +20,28 @@ use {core::ops, core::ptr, core::mem, std::num, gmp_mpfr_sys::{mpfr, gmp}};
 /// and prevents mistakes with uninitialized values.
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+pub struct MpfrBounds {
+    /// Intentionally private, to guard integrity.
+    precision_bits_length: usize,
+    limb_parts_length: usize
+}
+
+impl MpfrBounds {
+    const fn for_precision_bits_length(precision_bits_length: usize) -> Self {
+        Self {
+            precision_bits_length,
+            /// Based on mfpr::MPFR_DECL_INIT
+            limb_parts_length: (precision_bits_length - 1) / gmp::NUMB_BITS 
+                as usize + 1
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum FloatChoice {
     F32, F64, TwoFloat,
     Mpfr {
-        precision_bits_length: usize,
-        limb_parts_length: usize
+        bounds: MpfrBounds
     }
 }
 
@@ -34,7 +51,7 @@ impl FloatChoice {
             FloatChoice::F32 => f32::MANTISSA_DIGITS as usize,
             FloatChoice::F64 => f64::MANTISSA_DIGITS as usize,
             FloatChoice::TwoFloat => 2 * f64::MANTISSA_DIGITS as usize,
-            FloatChoice::Mpfr { precision_bits_length, .. } => precision_bits_length
+            FloatChoice::Mpfr {bounds: MpfrBounds { precision_bits_length, ..} } => precision_bits_length
         }
     }
 
@@ -68,10 +85,7 @@ impl FloatChoice {
         }
         else {
             FloatChoice::Mpfr {
-                precision_bits_length,
-                /// Based on mfpr::MPFR_DECL_INIT
-                limb_parts_length: (precision_bits_length - 1) / gmp::NUMB_BITS 
-                    as usize + 1
+                bounds: MpfrBounds::for_precision_bits_length(precision_bits_length)
             }
         }
     }
@@ -88,16 +102,15 @@ impl FloatChoice {
     ///
     /// If `self` is already the most precise for its space, this may
     /// return (a copy of) self, or a new instance.
-    pub fn most_precise_for_same_space(&self) -> Self {
+    pub const fn most_precise_for_same_space(&self) -> Self {
         match *self {
-            FloatChoice::Mpfr { limb_parts_length, ..} => {
+            FloatChoice::Mpfr { bounds: MpfrBounds { limb_parts_length, .. }} =>
                 // Based on reverse of mfpr::MPFR_DECL_INIT
                 FloatChoice::Mpfr {
-                    precision_bits_length: limb_parts_length
-                        * gmp::NUMB_BITS as usize,
-                    limb_parts_length
-                }
-            },
+                    bounds: MpfrBounds::for_precision_bits_length(
+                        limb_parts_length * gmp::NUMB_BITS as usize
+                    )
+                },
             other => other
         }
     }
@@ -132,7 +145,7 @@ impl FloatChoice {
 
     pub const fn mpfr_limb_parts_length(&self) -> usize {
         match *self {
-            FloatChoice::Mpfr { limb_parts_length, .. } => limb_parts_length,
+            FloatChoice::Mpfr { bounds: MpfrBounds {limb_parts_length, ..} } => limb_parts_length,
             _ => 0
         }
     }
@@ -142,7 +155,7 @@ impl FloatChoice {
             FloatChoice::F32 => mem::size_of::<Float<{ FloatChoice::F32 }>>(),
             FloatChoice::F64 => mem::size_of::<Float<{ FloatChoice::F64 }>>(),
             FloatChoice::TwoFloat => mem::size_of::<Float<{ FloatChoice::TwoFloat }>>(),
-            FloatChoice::Mpfr {limb_parts_length, ..} => {
+            FloatChoice::Mpfr { bounds: MpfrBounds {limb_parts_length, ..}} => {
                 const ONE_LIMB_CHOICE: FloatChoice = FloatChoice::for_binary_bounds(1, 0, f64::MAX_EXP + 1);
                 type OneLimbMpfr = Float<ONE_LIMB_CHOICE>;
 
@@ -157,11 +170,9 @@ impl FloatChoice {
 /// `const fun` functions here whose names end with _parts_length(s: isize) -> usize
 /// return the number of entries/slots of the respective type (f32, f64...) to
 /// be used by the respective parts. (Not a number of bytes.)
-/// Types and const genereric bounds are based on
-/// https://github.com/rust-lang/rust/issues/68436. However, not all
-/// tips from that discussion work with 1.52.0-nightly.
-
-/// Public, otherwise we were getting "private type `fn(isize) -> usize {f32_parts_length}` in public interface (error E0446)"
+/// These functions are not a part of public API. They are public only because
+/// otherwise we were getting "private type `fn(isize) -> usize
+/// f32_parts_length}` in public interface (error E0446)".
 pub const fn f32_parts_length(c: FloatChoice) -> usize {
     c.f32_parts_length()
 }
@@ -206,7 +217,7 @@ pub struct Float<const C: FloatChoice> where
     #[cfg(debug_assertions)]
     /// A pointer to Float instance itself. Used for extra .copied() check.
     /// Beneficial for testing the right usage of the API even without FloatChoice::Mpfr.
-    float_self: *const Float<C>
+    float_self: * const Float<C>
 }
 
 /// Used internally only while initializing an MPFR float. This is never leaked to the user.
@@ -312,31 +323,91 @@ pub fn copied(floats: &mut [i32]) {
 
 }
 
-/*impl Default for Float<0> {
-    fn default() -> Self {
-        Self {
-            f32_parts: [0.0; 1],
-            f64_parts: [],
-            two_float_parts: [],
-            significand: []
-        }
-    }
-}*/
-
 #[cfg(test)]
 mod tests {
-    use std::mem;
-    use crate::{Float, FloatChoice};
+    use {std::mem, gmp_mpfr_sys::gmp};
+    use mem::size_of;
+
+    use crate::{Float, FloatChoice, MpfrBounds};
     
+    /// How many limb_t instances may fit into one usize? Normally one
+    /// (unless MPFR was compiled with different pointer width than Rust).
+    const USIZE_TO_LIMB_T: usize = mem::size_of::<usize>() / mem::size_of::<gmp::limb_t>();
+    const ONE_LIMB_PRECISION: usize = usize::BITS as usize / USIZE_TO_LIMB_T;
+
+    type UniF32 = Float<{ FloatChoice::F32 }>;
+    type F64 = Float<{ FloatChoice::F64 }>;
+    type TwoFloat = Float<{ FloatChoice::TwoFloat }>;
+    // Types with names starting with MPFR_LIMB_x use `x` number of limbs.
+    type MPFR_LIMB_1_PREC_1 = Float<{ FloatChoice::Mpfr { bounds: MpfrBounds {
+        limb_parts_length: 1,
+        precision_bits_length: 1,
+    }}}>;
+    // Types with names ending with _USED use most of the whole precision
+    // available for their number of limbs (so they can't fit into a smaller
+    // number of limbs), but they don't use the whole available precision.
+    type MPFR_LIMB_1_PREC_USED = Float<{ FloatChoice::Mpfr { bounds: MpfrBounds {
+        limb_parts_length: 1,
+        precision_bits_length: 1 * ONE_LIMB_PRECISION,
+    }}}>;
+    // Types with names ending with _WHOLE use the whole precision available
+    // for their number of limbs.
+    type MPFR_LIMB_1_PREC_WHOLE = Float<{ FloatChoice::Mpfr { bounds: MpfrBounds {
+        limb_parts_length: 1,
+        precision_bits_length: 1 * ONE_LIMB_PRECISION,
+    }}}>;
+    // This helps when calculating size and alignment of `Float.float_self`
+    // pointer. That
+    // field exists in debug mode only. When on a 64+ bit platform,
+    // `float_self` may increase alignment (and hence the size) of F32. That's
+    // OK, since it does not affect release.)
+    // (We don't support 16 bit platform, but 32+ bit only.)
+    const POINTER_ALIGN: usize = mem::align_of::<* const usize>();
+    const POINTER_SIZE: usize = mem::size_of::<* const usize>();
+
+    /// Use assertions, so the checks are run only in debug mode (where `Float`
+    /// has field `float_self` - that's why we add `POINTER_SIZE`).
+    #[test]
+    fn debug_assert_type_sizes() {
+        assert!(   mem:: size_of::<f32>() <= POINTER_SIZE ); // On 32+ bit
+        assert_eq!(mem::align_of::<UniF32>(), POINTER_ALIGN);
+        // POINTER_SIZE is the same as mem::size_of::<f32> (on 32 bit platform),
+        // or larger (on 64+ bit platform - then f32 part of F32 aligns to).
+        assert_eq!(mem:: size_of::<UniF32>(), 2 * POINTER_SIZE);
+        
+        const UNI_F64_ALIGN: usize = mem:: size_of::<f64>().max(POINTER_ALIGN);
+        assert_eq!(mem::align_of::<F64>(), UNI_F64_ALIGN);
+        // Following should work on a 128+ bit platform, too.
+        assert_eq!(mem::size_of::<F64>(),
+            2* mem::size_of::<f64>().max(POINTER_SIZE) );
+
+        assert_eq!(mem::size_of::<TwoFloat>(),
+            mem::size_of::<twofloat::TwoFloat>() + POINTER_SIZE);
+        
+        //assert_eq!(mem::size_of::<MPFR_LIMB_1_PREC_1>(),
+    }
+
+    fn check(expectation: bool) {
+        if !expectation {
+            panic!();
+        }
+    }
+
+    /// For non-debug mode (where Float doesn't have field float_self).
+    #[test]
+    fn non_debug_check_type_sizes() {
+        let mut non_debug_run = true;
+        assert!( {
+            non_debug_run = false;
+            true
+        });
+        if non_debug_run {
+
+        }
+    }
+
     #[test]
     fn misc() {
     }
 
-    #[test]
-    fn size() {
-        let f0 = <Float<{ FloatChoice::F32 }>>::default();
-        let f1: Float<{ FloatChoice::F64 }> = Float::default();
-        println!("Size of Float<0>: {}", mem::size_of_val(&f0));
-        println!("Size of Float<1>: {}", mem::size_of_val(&f1))
-    }
 }
