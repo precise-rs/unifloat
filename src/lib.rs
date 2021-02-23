@@ -7,7 +7,7 @@ use {core::ops, core::ptr, core::mem, std::num, gmp_mpfr_sys::{mpfr, gmp}};
 /// 64bit extras, but a number of any and all 64-bit
 /// parts that contain the significand of the floating-point number. (Such parts
 /// may be used fully or partially.)
-/// When 0<=S<=2 Float is implemented by f32/f64/TwoFloat. Then S is less than
+/// When 0<=S<=2 UniFloat is implemented by f32/f64/TwoFloat. Then S is less than
 /// maximum length of the significand, because f32/f64/TwoFloat also include
 /// the sign and the exponent (which are separate in MPFR - when S>2
 /// or S==-1 or S==-2)!
@@ -38,31 +38,48 @@ impl MpfrBounds {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum FloatChoice {
+pub enum UniFloatChoice {
     F32, F64, TwoFloat,
     Mpfr {
         bounds: MpfrBounds
     }
 }
 
-impl FloatChoice {
+type UniF32 = UniFloat<{ UniFloatChoice::F32 }>;
+type UniF64 = UniFloat<{ UniFloatChoice::F64 }>;
+type UniTwoFloat = UniFloat<{ UniFloatChoice::TwoFloat }>;
+// Types with names starting with `UniMpfrLimbX` use `X` number of limbs.
+type UniMpfrLimb1Prec1 = UniFloat<{ UniFloatChoice::Mpfr { bounds: MpfrBounds {
+    limb_parts_length: 1,
+    precision_bits_length: 1,
+}}}>;
+
+const ONE_LIMB_PRECISION: usize = gmp::limb_t::BITS as usize;
+// Types with names like UniMpfrLimbxPrecAll use all the precision available
+// for their number of limbs.
+type UniMpfrLimb2PrecAll = UniFloat<{ UniFloatChoice::Mpfr { bounds: MpfrBounds {
+    limb_parts_length: 2,
+    precision_bits_length: 2 * ONE_LIMB_PRECISION,
+}}}>;
+
+impl UniFloatChoice {
     pub fn precision_bits_length(&self) -> usize {
         match *self {
-            FloatChoice::F32 => f32::MANTISSA_DIGITS as usize,
-            FloatChoice::F64 => f64::MANTISSA_DIGITS as usize,
-            FloatChoice::TwoFloat => 2 * f64::MANTISSA_DIGITS as usize,
-            FloatChoice::Mpfr {bounds: MpfrBounds { precision_bits_length, ..} } => precision_bits_length
+            UniFloatChoice::F32 => f32::MANTISSA_DIGITS as usize,
+            UniFloatChoice::F64 => f64::MANTISSA_DIGITS as usize,
+            UniFloatChoice::TwoFloat => 2 * f64::MANTISSA_DIGITS as usize,
+            UniFloatChoice::Mpfr {bounds: MpfrBounds { precision_bits_length, ..} } => precision_bits_length
         }
     }
 
-    /// A Float instance based on the returned FloatChoice may also accommodate
+    /// A UniFloat instance based on the returned UniFloatChoice may also accommodate
     /// values outside the given bounds, but it's guaranteed to fulfill the
     /// given bounds.
     pub const fn for_binary_bounds(
         precision_bits_length: usize,
         min_exponent: i32,
         max_exponent: i32
-    ) -> FloatChoice {
+    ) -> UniFloatChoice {
         assert!(
             precision_bits_length > 0,
             "MPFR requires the minimum precision (MPFR_PREC_MIN) of 1 bit."
@@ -71,42 +88,42 @@ impl FloatChoice {
         if precision_bits_length <= f32::MANTISSA_DIGITS as usize
         && min_exponent >= f32::MIN_EXP
         && max_exponent <= f32::MAX_EXP {
-            FloatChoice::F32
+            UniFloatChoice::F32
         } else
         if precision_bits_length <= f64::MANTISSA_DIGITS as usize
         && min_exponent >= f64::MIN_EXP
         && max_exponent <= f64::MAX_EXP {
-            FloatChoice::F64
+            UniFloatChoice::F64
         } else
         if precision_bits_length <= 2* f64::MANTISSA_DIGITS as usize
         && min_exponent >= f64::MIN_EXP
         && max_exponent <= f64::MAX_EXP {
-            FloatChoice::TwoFloat
+            UniFloatChoice::TwoFloat
         }
         else {
-            FloatChoice::Mpfr {
+            UniFloatChoice::Mpfr {
                 bounds: MpfrBounds::for_precision_bits_length(precision_bits_length)
             }
         }
     }
 
-    /// for_binary_bounds(...) tells you what FloatChoice you need to cover
+    /// for_binary_bounds(...) tells you what UniFloatChoice you need to cover
     /// your bounds. But how much more precision can you fit in the same memory?
-    /// This function gives you FloatChoice describing that.
+    /// This function gives you UniFloatChoice describing that.
     ///
-    /// Beware that when `self` is FloatChoice::Mpfr, and if the result of this
-    /// function indicates wider precision, then using a mix of Float instances
-    /// based on both FloatChoice-s are not very compatible! (They involve MPFR
-    /// rounding.) Then you don't want to base all related FloatChoice
+    /// Beware that when `self` is UniFloatChoice::Mpfr, and if the result of this
+    /// function indicates wider precision, then using a mix of UniFloat instances
+    /// based on both UniFloatChoice-s are not very compatible! (They involve MPFR
+    /// rounding.) Then you don't want to base all related UniFloatChoice
     /// instances on self, but on the result of this function, instead.
     ///
     /// If `self` is already the most precise for its space, this may
     /// return (a copy of) self, or a new instance.
     pub const fn most_precise_for_same_space(&self) -> Self {
         match *self {
-            FloatChoice::Mpfr { bounds: MpfrBounds { limb_parts_length, .. }} =>
+            UniFloatChoice::Mpfr { bounds: MpfrBounds { limb_parts_length, .. }} =>
                 // Based on reverse of mfpr::MPFR_DECL_INIT
-                FloatChoice::Mpfr {
+                UniFloatChoice::Mpfr {
                     bounds: MpfrBounds::for_precision_bits_length(
                         limb_parts_length * gmp::NUMB_BITS as usize
                     )
@@ -117,50 +134,52 @@ impl FloatChoice {
 
     pub const fn f32_parts_length(&self) -> usize {
         match self {
-            FloatChoice::F32 => 1,
+            UniFloatChoice::F32 => 1,
             _ => 0
         }
     }
 
     pub const fn f64_parts_length(&self) -> usize {
         match self {
-            FloatChoice::F64 => 1,
+            UniFloatChoice::F64 => 1,
             _ => 0
         }
     }
 
-    pub const fn two_float_parts_length(&self) -> usize {
+    pub const fn twofloat_parts_length(&self) -> usize {
         match self {
-            FloatChoice::TwoFloat => 1,
+            UniFloatChoice::TwoFloat => 1,
             _ => 0
         }
     }
 
     pub const fn mpfr_fixed_parts_length(&self) -> usize {
         match self {
-            FloatChoice::Mpfr{ .. } => 1,
+            UniFloatChoice::Mpfr{ .. } => 1,
             _ => 0
         }
     }
 
     pub const fn mpfr_limb_parts_length(&self) -> usize {
         match *self {
-            FloatChoice::Mpfr { bounds: MpfrBounds {limb_parts_length, ..} } => limb_parts_length,
+            UniFloatChoice::Mpfr { bounds: MpfrBounds {limb_parts_length, ..} } => limb_parts_length,
             _ => 0
         }
     }
 
-    pub const fn float_size(&self) -> usize {
+    /// Size of any `UniFloat` instance created for this `UniFloatChoice`, in
+    /// bytes. Beware that this involves extra space in debug mode.
+    pub const fn unifloat_size(&self) -> usize {
         match *self {
-            FloatChoice::F32 => mem::size_of::<Float<{ FloatChoice::F32 }>>(),
-            FloatChoice::F64 => mem::size_of::<Float<{ FloatChoice::F64 }>>(),
-            FloatChoice::TwoFloat => mem::size_of::<Float<{ FloatChoice::TwoFloat }>>(),
-            FloatChoice::Mpfr { bounds: MpfrBounds {limb_parts_length, ..}} => {
-                const ONE_LIMB_CHOICE: FloatChoice = FloatChoice::for_binary_bounds(1, 0, f64::MAX_EXP + 1);
-                type OneLimbMpfr = Float<ONE_LIMB_CHOICE>;
+            UniFloatChoice::F32 => mem::size_of::<UniF32>(),
+            UniFloatChoice::F64 => mem::size_of::<UniF64>(),
+            UniFloatChoice::TwoFloat => mem::size_of::<UniTwoFloat>(),
+            UniFloatChoice::Mpfr { bounds: MpfrBounds {limb_parts_length, ..}} => {
+                mem::size_of::<UniMpfrLimb1Prec1>()
+                    + (limb_parts_length - 1)
+                      * (   mem::size_of::<UniMpfrLimb2PrecAll>()
+                          - mem::size_of::<UniMpfrLimb1Prec1>())
 
-                mem::size_of::<OneLimbMpfr>() + (limb_parts_length - 1)
-                    * mem::size_of::<MpfrLimbPart>()
             }
         }
     }
@@ -173,51 +192,51 @@ impl FloatChoice {
 /// These functions are not a part of public API. They are public only because
 /// otherwise we were getting "private type `fn(isize) -> usize
 /// f32_parts_length}` in public interface (error E0446)".
-pub const fn f32_parts_length(c: FloatChoice) -> usize {
+pub const fn f32_parts_length(c: UniFloatChoice) -> usize {
     c.f32_parts_length()
 }
-type F32Parts<const C: FloatChoice> = [f32; f32_parts_length(C)];
+type F32Parts<const C: UniFloatChoice> = [f32; f32_parts_length(C)];
 
-pub const fn f64_parts_length(c: FloatChoice) -> usize {
+pub const fn f64_parts_length(c: UniFloatChoice) -> usize {
     c.f64_parts_length()
 }
-type F64Parts<const C: FloatChoice> = [f64; f64_parts_length(C)];
+type F64Parts<const C: UniFloatChoice> = [f64; f64_parts_length(C)];
 
-pub const fn two_float_parts_length(c: FloatChoice) -> usize {
-    c.two_float_parts_length()
+pub const fn twofloat_parts_length(c: UniFloatChoice) -> usize {
+    c.twofloat_parts_length()
 }
-type TwoFloatParts<const C: FloatChoice> = [twofloat::TwoFloat; two_float_parts_length(C)];
+type TwoFloatParts<const C: UniFloatChoice> = [twofloat::TwoFloat; twofloat_parts_length(C)];
 
-pub const fn mpfr_limb_parts_length(c: FloatChoice) -> usize {
+pub const fn mpfr_limb_parts_length(c: UniFloatChoice) -> usize {
     c.mpfr_limb_parts_length()
 }
 type MpfrLimbPart = mem::MaybeUninit<gmp::limb_t>;
-type MpfrLimbParts<const C: FloatChoice> = [MpfrLimbPart; mpfr_limb_parts_length(C)];
+type MpfrLimbParts<const C: UniFloatChoice> = [MpfrLimbPart; mpfr_limb_parts_length(C)];
 
-pub const fn mpfr_fixed_parts_length(c: FloatChoice) -> usize {
+pub const fn mpfr_fixed_parts_length(c: UniFloatChoice) -> usize {
     c.mpfr_fixed_parts_length()
 }
 // TODO
-type MpfrFixedParts<const C: FloatChoice> = [mpfr::mpfr_t;mpfr_fixed_parts_length(C)];
+type MpfrFixedParts<const C: UniFloatChoice> = [mpfr::mpfr_t;mpfr_fixed_parts_length(C)];
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct Float<const C: FloatChoice> where
+pub struct UniFloat<const C: UniFloatChoice> where
 [f32; f32_parts_length(C)]: Sized,
 [f64; f64_parts_length(C)]: Sized,
-[twofloat::TwoFloat; two_float_parts_length(C)]: Sized,
+[twofloat::TwoFloat; twofloat_parts_length(C)]: Sized,
 [MpfrLimbPart; mpfr_limb_parts_length(C)]: Sized,
 [mpfr::mpfr_t; mpfr_fixed_parts_length(C)]: Sized,
 {
     f32s: F32Parts<C>,
     f64s: F64Parts<C>,
-    two_floats: TwoFloatParts<C>,
+    twofloats: TwoFloatParts<C>,
     mpfr_limbs: MpfrLimbParts<C>,
     mpfr_fixeds: MpfrFixedParts<C>,
     #[cfg(debug_assertions)]
-    /// A pointer to Float instance itself. Used for extra .copied() check.
-    /// Beneficial for testing the right usage of the API even without FloatChoice::Mpfr.
-    float_self: * const Float<C>
+    /// A pointer to UniFloat instance itself. Used for extra .copied() check.
+    /// Beneficial for testing the right usage of the API even without UniFloatChoice::Mpfr.
+    unifloat_self: * const UniFloat<C>
 }
 
 /// Used internally only while initializing an MPFR float. This is never leaked to the user.
@@ -229,10 +248,10 @@ const DUMMY_MPFR_LIMB_PTR: ptr::NonNull<gmp::limb_t> = unsafe {
 /// Based on gmp_mpfr_sys::MPFR_DECL_INIT
 const INITIAL_MPFR_EXP: mpfr::exp_t = 1-mpfr::exp_t::max_value();
 
-impl <const C: FloatChoice> Default for Float<C> where
+impl <const C: UniFloatChoice> Default for UniFloat<C> where
 [f32; f32_parts_length(C)]: Sized,
 [f64; f64_parts_length(C)]: Sized,
-[twofloat::TwoFloat; two_float_parts_length(C)]: Sized,
+[twofloat::TwoFloat; twofloat_parts_length(C)]: Sized,
 [MpfrLimbPart; mpfr_limb_parts_length(C)]: Sized,
 [mpfr::mpfr_t; mpfr_fixed_parts_length(C)]: Sized,
 {
@@ -241,10 +260,10 @@ impl <const C: FloatChoice> Default for Float<C> where
     }
 }
 
-impl <const C: FloatChoice> Float<C> where
+impl <const C: UniFloatChoice> UniFloat<C> where
     [f32; f32_parts_length(C)]: Sized,
     [f64; f64_parts_length(C)]: Sized,
-    [twofloat::TwoFloat; two_float_parts_length(C)]: Sized,
+    [twofloat::TwoFloat; twofloat_parts_length(C)]: Sized,
     [MpfrLimbPart; mpfr_limb_parts_length(C)]: Sized,
     [mpfr::mpfr_t; mpfr_fixed_parts_length(C)]: Sized,
 {
@@ -255,7 +274,7 @@ impl <const C: FloatChoice> Float<C> where
             /// array size is zero. However, rustc + LLVM can optimize it away.
             f32s: [f32::NAN; f32_parts_length(C)],
             f64s: [f64::NAN; f64_parts_length(C)],
-            two_floats: [twofloat::TwoFloat::NAN; two_float_parts_length(C)],
+            twofloats: [twofloat::TwoFloat::NAN; twofloat_parts_length(C)],
 
             mpfr_limbs: unsafe { core::mem::MaybeUninit::uninit().assume_init() },
             
@@ -265,7 +284,8 @@ impl <const C: FloatChoice> Float<C> where
                 exp: INITIAL_MPFR_EXP,
                 d: DUMMY_MPFR_LIMB_PTR
             }; mpfr_fixed_parts_length(C)],
-            float_self: ptr::null()
+            #[cfg(debug_assertions)]
+            unifloat_self: ptr::null()
         };
         *result.copied()
     }
@@ -280,27 +300,34 @@ impl <const C: FloatChoice> Float<C> where
 
     #[inline]
     fn assert_copy_fixed(&self) {
+        #[cfg(debug_assertions)] {
+            assert!(self.unifloat_self == self,
+                "Must call .copied() first, or assign with <<= instead of =.");
+        }
         assert!(
-            if let FloatChoice::Mpfr { .. } = C {
+            if let UniFloatChoice::Mpfr { .. } = C {
                 self.mpfr_fixeds[0].d == self.mpfr_limps_ptr()
             } else {
                 true
-            } && self.float_self == self,
-            "Must call .copied() first, or assign with <<= instead of =.");
+            },
+            "MPFR fields indicate that the instance was copied without having called .copied() afterwards, or it was assign to with = instead of <<=. However, unifloat_self guard didn't catch this. Please report this to UniFloat along with how to reproduce it.");
     }
 
     #[inline]
     fn assert_copy_not_fixed(&self) {
+        #[cfg(debug_assertions)]
+        assert!(self.unifloat_self != self,
+            "Have already called .copied(), or assigned with <<= instead of =. Do not call .copied() now.");
         assert!(
-            if let FloatChoice::Mpfr { .. } = C {
+            if let UniFloatChoice::Mpfr { .. } = C {
                 self.mpfr_fixeds[0].d != self.mpfr_limps_ptr()
             } else {
                 true
-            }  && self.float_self != self,
-            "Have already called .copied(), or assigned with <<= instead of =. Do not call .copied() now.");
+            },
+            "MPFR fields indicate that the code had already called .copied(), or assigned with <<= instead of =. However, unifloat_self guard didn't catch this. Please report this to UniFloat along with how to reproduce it.");
     }
 
-    /// Call this exactly one after a Float value is copied to:
+    /// Call this exactly one after a UniFloat value is copied to:
     /// Assigned to, received as a 
     /// parameter, received from a result of a called function, copied from a
     /// struct/tuple/array. Also if was assigned from a result of an expression.
@@ -308,101 +335,102 @@ impl <const C: FloatChoice> Float<C> where
     /// operator.
     pub fn copied(&mut self) -> &mut Self {
         self.assert_copy_not_fixed();
-        if let FloatChoice::Mpfr { .. } = C {
+        if let UniFloatChoice::Mpfr { .. } = C {
             self.mpfr_fixeds[0].d = self.mpfr_limps_ptr();
         }
-        assert!({
-            self.float_self = self as *const _ as *const Float<C>;
-            true
-        });
+        #[cfg(debug_assertions)] {
+            self.unifloat_self = self as *const _ as *const UniFloat<C>;
+        }
         self
     }
 }
 
-pub fn copied(floats: &mut [i32]) {
+// @TODO generic
+pub fn copied(unifloats: &mut [i32]) {
 
 }
 
 #[cfg(test)]
 mod tests {
-    use {std::mem, gmp_mpfr_sys::gmp};
-    use mem::size_of;
+    use {std::mem, gmp_mpfr_sys::{mpfr, gmp}};
+    use crate::{MpfrBounds, ONE_LIMB_PRECISION, UniFloat, UniFloatChoice, UniF32,
+        UniF64, UniTwoFloat, UniMpfrLimb1Prec1, UniMpfrLimb2PrecAll};
 
-    use crate::{Float, FloatChoice, MpfrBounds};
-    
-    /// How many limb_t instances may fit into one usize? Normally one
-    /// (unless MPFR was compiled with different pointer width than Rust).
-    const USIZE_TO_LIMB_T: usize = mem::size_of::<usize>() / mem::size_of::<gmp::limb_t>();
-    const ONE_LIMB_PRECISION: usize = usize::BITS as usize / USIZE_TO_LIMB_T;
-
-    type UniF32 = Float<{ FloatChoice::F32 }>;
-    type F64 = Float<{ FloatChoice::F64 }>;
-    type TwoFloat = Float<{ FloatChoice::TwoFloat }>;
-    // Types with names starting with MPFR_LIMB_x use `x` number of limbs.
-    type MPFR_LIMB_1_PREC_1 = Float<{ FloatChoice::Mpfr { bounds: MpfrBounds {
-        limb_parts_length: 1,
-        precision_bits_length: 1,
-    }}}>;
-    // Types with names ending with _USED use most of the whole precision
+    // Types with names like UniMpfrLimbxPrecMost use almost the whole precision
     // available for their number of limbs (so they can't fit into a smaller
     // number of limbs), but they don't use the whole available precision.
-    type MPFR_LIMB_1_PREC_USED = Float<{ FloatChoice::Mpfr { bounds: MpfrBounds {
+    type UniMpfrLimb1PrecMost = UniFloat<{ UniFloatChoice::Mpfr { bounds: MpfrBounds {
         limb_parts_length: 1,
         precision_bits_length: 1 * ONE_LIMB_PRECISION,
     }}}>;
-    // Types with names ending with _WHOLE use the whole precision available
-    // for their number of limbs.
-    type MPFR_LIMB_1_PREC_WHOLE = Float<{ FloatChoice::Mpfr { bounds: MpfrBounds {
+    type UniMpfrLimb1PrecAll = UniFloat<{ UniFloatChoice::Mpfr { bounds: MpfrBounds {
         limb_parts_length: 1,
         precision_bits_length: 1 * ONE_LIMB_PRECISION,
-    }}}>;
-    // This helps when calculating size and alignment of `Float.float_self`
+    }}}>; //@TODO test most_precise_for_same_space
+    // This helps when calculating size and alignment of `UniFloat.unifloat_self`
     // pointer. That
     // field exists in debug mode only. When on a 64+ bit platform,
-    // `float_self` may increase alignment (and hence the size) of F32. That's
+    // `unifloat_self` may increase alignment (and hence the size) of F32. That's
     // OK, since it does not affect release.)
     // (We don't support 16 bit platform, but 32+ bit only.)
     const POINTER_ALIGN: usize = mem::align_of::<* const usize>();
     const POINTER_SIZE: usize = mem::size_of::<* const usize>();
+    const PRIMITIVE_F32_SIZE: usize = mem::size_of::<f32>();
+    const PRIMITIVE_F64_SIZE: usize = mem::size_of::<f64>();
+    const PRIMITIVE_F64_ALIGN: usize = mem::align_of::<f64>();
 
-    /// Use assertions, so the checks are run only in debug mode (where `Float`
-    /// has field `float_self` - that's why we add `POINTER_SIZE`).
+    /// Use assertions, so the checks are run only in debug mode (where `UniFloat`
+    /// has field `unifloat_self` - that's why we add `POINTER_SIZE`).
+    /// All calculations are for C representation (`#[repr(C)]`) of UniFloat
+    /// with auto-generated alignments (not with `packed` nor `align` in
+    /// `repr` attribute).
     #[test]
-    fn debug_assert_type_sizes() {
-        assert!(   mem:: size_of::<f32>() <= POINTER_SIZE ); // On 32+ bit
+    #[cfg(debug_assertions)]
+    fn debug_type_sizes() {
+        // Following are not real tests, but my clarification
+        assert!(   PRIMITIVE_F32_SIZE <= POINTER_SIZE ); // Support 32+ bit only.
         assert_eq!(mem::align_of::<UniF32>(), POINTER_ALIGN);
-        // POINTER_SIZE is the same as mem::size_of::<f32> (on 32 bit platform),
-        // or larger (on 64+ bit platform - then f32 part of F32 aligns to).
         assert_eq!(mem:: size_of::<UniF32>(), 2 * POINTER_SIZE);
         
-        const UNI_F64_ALIGN: usize = mem:: size_of::<f64>().max(POINTER_ALIGN);
-        assert_eq!(mem::align_of::<F64>(), UNI_F64_ALIGN);
+        let uni_f64_align = PRIMITIVE_F64_ALIGN.max(POINTER_ALIGN);
+        assert_eq!(mem::align_of::<UniF64>(),     uni_f64_align);
         // Following should work on a 128+ bit platform, too.
-        assert_eq!(mem::size_of::<F64>(),
-            2* mem::size_of::<f64>().max(POINTER_SIZE) );
+        assert_eq!(mem::size_of ::<UniF64>(),
+            PRIMITIVE_F64_SIZE.max(uni_f64_align) + POINTER_SIZE.max(uni_f64_align));
 
-        assert_eq!(mem::size_of::<TwoFloat>(),
-            mem::size_of::<twofloat::TwoFloat>() + POINTER_SIZE);
-        
-        //assert_eq!(mem::size_of::<MPFR_LIMB_1_PREC_1>(),
+        let uni_twofloat_align = mem::align_of::<twofloat::TwoFloat>().max(POINTER_ALIGN);
+        assert_eq!(mem::size_of::<UniTwoFloat>(),
+            mem::size_of::<twofloat::TwoFloat>().max(uni_twofloat_align)
+                + POINTER_SIZE.max(uni_twofloat_align));
     }
 
-    fn check(expectation: bool) {
-        if !expectation {
-            panic!();
-        }
-    }
-
-    /// For non-debug mode (where Float doesn't have field float_self).
+    /// For non-debug mode (where UniFloat doesn't have field unifloat_self).
     #[test]
-    fn non_debug_check_type_sizes() {
+    fn non_debug_type_sizes() {
+        if true {
+            #[cfg(debug_assertions)]
+            return
+        }
         let mut non_debug_run = true;
         assert!( {
             non_debug_run = false;
             true
         });
         if non_debug_run {
-
+            if mem::size_of::<UniF32>() != PRIMITIVE_F32_SIZE { panic!(); }
+            if mem::size_of::<UniF64>() != PRIMITIVE_F64_SIZE { panic!(); }
+            if mem::size_of::<UniTwoFloat>() != mem::size_of::<twofloat::TwoFloat>() { panic!(); }
+            if mem::size_of::<UniMpfrLimb1Prec1>() != /*fixed part:*/ mem::size_of::<mpfr::mpfr_t>()
+                + /* limb part: */ mem::size_of::<mem::MaybeUninit<gmp::limb_t>>() { panic!(); }
+            if mem::size_of::<UniMpfrLimb1PrecMost>() != mem::size_of::<UniMpfrLimb1Prec1>() {
+                panic!();
+            }
+            if mem::size_of::<UniMpfrLimb1PrecAll>() != mem::size_of::<UniMpfrLimb1Prec1>() {
+                panic!();
+            }
+            if mem::size_of::<UniMpfrLimb2PrecAll>() != mem::size_of::<mpfr::mpfr_t>()
+                + 2* mem::size_of::<mem::MaybeUninit<gmp::limb_t>>() { panic!(); }
+            
         }
     }
 
