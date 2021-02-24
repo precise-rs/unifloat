@@ -10,6 +10,6 @@ edition = "2018"
 twofloat = "0.4.1"
 
 [dependencies.gmp-mpfr-sys]
-version = "~1.4"
+version = "~1.4" # We depend on MPFR internals. Hence, as per https://crates.io/crates/gmp-mpfr-sys, the version starts with tilde ~.
 default-features = false
 features = ["mpfr"]
