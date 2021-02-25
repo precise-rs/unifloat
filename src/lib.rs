@@ -1,5 +1,5 @@
 #![allow(incomplete_features)]
-#![feature(const_generics, const_evaluatable_checked, const_panic, int_bits_const)]
+#![feature(const_generics, const_evaluatable_checked, const_panic, int_bits_const, const_maybe_uninit_assume_init)]
 #![no_std]
 mod tests;
 
@@ -230,7 +230,9 @@ pub struct UniFloat<const C: UniFloatChoice> where
 [MpfrLimbPart; mpfr_limb_parts_length(C)]: Sized,
 [mpfr::mpfr_t; mpfr_fixed_parts_length(C)]: Sized,
 {
-    f32s: F32Parts<C>,
+    // When you initialize the arrays with `[item; array_length]`, `item` get evaluated, even if 
+    /// array_length is zero. However, rustc + LLVM can optimize it away.
+            f32s: F32Parts<C>,
     f64s: F64Parts<C>,
     twofloats: TwoFloatParts<C>,
     mpfr_limbs: MpfrLimbParts<C>,
@@ -258,7 +260,7 @@ impl <const C: UniFloatChoice> Default for UniFloat<C> where
 [mpfr::mpfr_t; mpfr_fixed_parts_length(C)]: Sized,
 {
     fn default() -> Self {
-        Self::nan()
+        Self::NAN
     }
 }
 
@@ -270,10 +272,7 @@ impl <const C: UniFloatChoice> UniFloat<C> where
     [mpfr::mpfr_t; mpfr_fixed_parts_length(C)]: Sized,
 {
     /// Not-a-Number.
-    pub fn nan() -> Self {
-        let mut result = Self {
-            // The items to be copied into the arrays get evaluated, even if 
-            /// array size is zero. However, rustc + LLVM can optimize it away.
+    pub const NAN: Self = Self {
             f32s: [f32::NAN; f32_parts_length(C)],
             f64s: [f64::NAN; f64_parts_length(C)],
             twofloats: [twofloat::TwoFloat::NAN; twofloat_parts_length(C)],
@@ -288,9 +287,7 @@ impl <const C: UniFloatChoice> UniFloat<C> where
             }; mpfr_fixed_parts_length(C)],
             #[cfg(debug_assertions)]
             unifloat_self: ptr::null()
-        };
-        *result.copied()
-    }
+    };
 
     // Based on `gmp_mpfr_sys::MPFR_DECL_INIT`, but here we accept non-mutable
     // &self, because we use this in read-only asserts, too.
@@ -355,7 +352,8 @@ impl <const C: UniFloatChoice> ops::ShlAssign for UniFloat<C> where
 [mpfr::mpfr_t; mpfr_fixed_parts_length(C)]: Sized,
 {
     fn shl_assign(&mut self, rhs: Self) {
-        rhs.assert_copy_fixed();
+        // DO NOT call rhs.assert_copy_fixed() here, because it's passed by value (rather than
+        // by reference). So it should have been copy-fixed already.
         *self = rhs;
         self.copied();
     }
