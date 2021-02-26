@@ -50,6 +50,24 @@ fn debug_type_sizes() {
             + POINTER_SIZE.max(uni_twofloat_align));
 }
 
+struct SizeTestU32Present {
+    u32_present: u32,
+}
+//#[repr(packed({ mem::align_of::<u64>() }))]
+struct SizeTestU32PresentU64NotPresent {
+    u32_present: u32,
+    //#[cfg(debug_assertions)]
+    u64_not_present: [u64;1],
+}
+
+#[test]
+fn alignment_test() {
+    //debug_assert!(true);
+    let with_u64 = SizeTestU32PresentU64NotPresent { u32_present: 0, u64_not_present: [1;1] };
+    //std::println!("&with_u64: {:?}", &(with_u64.u64_not_present) as *const _);
+    panic!("Size of an empty tuple: {}; Alignment of an empty tuple: {}, SizeTestU32Present: {}; size of SizeTestU32PresentU64NotPresent: {}; align of SizeTestU32PresentU64NotPresent: {}", 
+    mem::size_of::<()>(), mem::align_of::<()>(), mem::size_of::<SizeTestU32Present>(), mem::size_of::<SizeTestU32PresentU64NotPresent>(), mem::align_of::<SizeTestU32PresentU64NotPresent>());
+}
 /// For non-debug mode (where UniFloat doesn't have field unifloat_self).
 #[test]
 fn non_debug_type_sizes() {
@@ -62,7 +80,10 @@ fn non_debug_type_sizes() {
         non_debug_run = false;
         true
     });
-    if non_debug_run {
+    //if !cfg!(debug_assertions) { panic!(); }
+    if !cfg!(debug_assertions) {
+    //if non_debug_run {
+        //println!("self_float: {}", UniF32::NAN.unifloat_self as *const _);
         if mem::size_of::<UniF32>() != PRIMITIVE_F32_SIZE { panic!(); }
         if mem::size_of::<UniF64>() != PRIMITIVE_F64_SIZE { panic!(); }
         if mem::size_of::<UniTwoFloat>() != mem::size_of::<twofloat::TwoFloat>() { panic!(); }

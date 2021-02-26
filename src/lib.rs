@@ -47,6 +47,7 @@ pub enum UniFloatChoice {
     }
 }
 
+// Not public. Let's promote as generic solutions as possible.
 type UniF32 = UniFloat<{ UniFloatChoice::F32 }>;
 type UniF64 = UniFloat<{ UniFloatChoice::F64 }>;
 type UniTwoFloat = UniFloat<{ UniFloatChoice::TwoFloat }>;
@@ -202,23 +203,26 @@ type F32Parts<const C: UniFloatChoice> = [f32; f32_parts_length(C)];
 pub const fn f64_parts_length(c: UniFloatChoice) -> usize {
     c.f64_parts_length()
 }
+#[allow(dead_code)] // not used with f32_only feature.
 type F64Parts<const C: UniFloatChoice> = [f64; f64_parts_length(C)];
 
 pub const fn twofloat_parts_length(c: UniFloatChoice) -> usize {
     c.twofloat_parts_length()
 }
+#[allow(dead_code)]
 type TwoFloatParts<const C: UniFloatChoice> = [twofloat::TwoFloat; twofloat_parts_length(C)];
 
 pub const fn mpfr_limb_parts_length(c: UniFloatChoice) -> usize {
     c.mpfr_limb_parts_length()
 }
 type MpfrLimbPart = mem::MaybeUninit<gmp::limb_t>;
+#[allow(dead_code)]
 type MpfrLimbParts<const C: UniFloatChoice> = [MpfrLimbPart; mpfr_limb_parts_length(C)];
 
 pub const fn mpfr_fixed_parts_length(c: UniFloatChoice) -> usize {
     c.mpfr_fixed_parts_length()
 }
-// TODO
+#[allow(dead_code)]
 type MpfrFixedParts<const C: UniFloatChoice> = [mpfr::mpfr_t;mpfr_fixed_parts_length(C)];
 
 #[repr(C)]
@@ -230,12 +234,16 @@ pub struct UniFloat<const C: UniFloatChoice> where
 [MpfrLimbPart; mpfr_limb_parts_length(C)]: Sized,
 [mpfr::mpfr_t; mpfr_fixed_parts_length(C)]: Sized,
 {
-    // When you initialize the arrays with `[item; array_length]`, `item` get evaluated, even if 
+    // When you initialize the arrays with `[item; array_length]`, `item` gets evaluated, even if
     /// array_length is zero. However, rustc + LLVM can optimize it away.
-            f32s: F32Parts<C>,
+    f32s: F32Parts<C>,
+    #[cfg(not(feature = "f32_only"))]
     f64s: F64Parts<C>,
+    #[cfg(not(feature = "f32_only"))]
     twofloats: TwoFloatParts<C>,
+    #[cfg(not(feature = "f32_only"))]
     mpfr_limbs: MpfrLimbParts<C>,
+    #[cfg(not(feature = "f32_only"))]
     mpfr_fixeds: MpfrFixedParts<C>,
     #[cfg(debug_assertions)]
     /// A pointer to UniFloat instance itself. Used for extra .copied() check.
@@ -244,12 +252,15 @@ pub struct UniFloat<const C: UniFloatChoice> where
 }
 
 /// Used internally only while initializing an MPFR float. This is never leaked to the user.
+#[allow(dead_code)]
 const DUMMY_MPFR_LIMB: i64 = 0;
+#[allow(dead_code)]
 const DUMMY_MPFR_LIMB_PTR: ptr::NonNull<gmp::limb_t> = unsafe {
     core::ptr::NonNull::new_unchecked(&DUMMY_MPFR_LIMB as *const _ as *mut gmp::limb_t)
 };
 /// Never leaked to the user.
 /// Based on gmp_mpfr_sys::MPFR_DECL_INIT
+#[allow(dead_code)]
 const INITIAL_MPFR_EXP: mpfr::exp_t = 1-mpfr::exp_t::max_value();
 
 impl <const C: UniFloatChoice> Default for UniFloat<C> where
@@ -273,24 +284,29 @@ impl <const C: UniFloatChoice> UniFloat<C> where
 {
     /// Not-a-Number.
     pub const NAN: Self = Self {
-            f32s: [f32::NAN; f32_parts_length(C)],
-            f64s: [f64::NAN; f64_parts_length(C)],
-            twofloats: [twofloat::TwoFloat::NAN; twofloat_parts_length(C)],
+        f32s: [f32::NAN; f32_parts_length(C)],
+        #[cfg(not(feature = "f32_only"))]
+        f64s: [f64::NAN; f64_parts_length(C)],
+        #[cfg(not(feature = "f32_only"))]
+        twofloats: [twofloat::TwoFloat::NAN; twofloat_parts_length(C)],
 
-            mpfr_limbs: unsafe { core::mem::MaybeUninit::uninit().assume_init() },
-            
-            mpfr_fixeds: [mpfr::mpfr_t {
-                prec: 1,
-                sign: 1,
-                exp: INITIAL_MPFR_EXP,
-                d: DUMMY_MPFR_LIMB_PTR
-            }; mpfr_fixed_parts_length(C)],
-            #[cfg(debug_assertions)]
-            unifloat_self: ptr::null()
+        #[cfg(not(feature = "f32_only"))]
+        mpfr_limbs: unsafe { core::mem::MaybeUninit::uninit().assume_init() },
+
+        #[cfg(not(feature = "f32_only"))]
+        mpfr_fixeds: [mpfr::mpfr_t {
+            prec: 1,
+            sign: 1,
+            exp: INITIAL_MPFR_EXP,
+            d: DUMMY_MPFR_LIMB_PTR
+        }; mpfr_fixed_parts_length(C)],
+        #[cfg(debug_assertions)]
+        unifloat_self: ptr::null()
     };
 
     // Based on `gmp_mpfr_sys::MPFR_DECL_INIT`, but here we accept non-mutable
     // &self, because we use this in read-only asserts, too.
+    #[cfg(not(feature = "f32_only"))]
     fn mpfr_limps_ptr(&self) -> ptr::NonNull<gmp::limb_t> {
         unsafe {
             ptr::NonNull::new_unchecked(self.mpfr_limbs[..].as_ptr() as *mut gmp::limb_t)
@@ -303,6 +319,7 @@ impl <const C: UniFloatChoice> UniFloat<C> where
             assert!(self.unifloat_self == self,
                 "Must call .copied() first, or assign with <<= instead of =.");
         }
+        #[cfg(not(feature = "f32_only"))]
         assert!(
             if let UniFloatChoice::Mpfr { .. } = C {
                 self.mpfr_fixeds[0].d == self.mpfr_limps_ptr()
@@ -317,6 +334,7 @@ impl <const C: UniFloatChoice> UniFloat<C> where
         #[cfg(debug_assertions)]
         assert!(self.unifloat_self != self,
             "Have already called .copied(), or assigned with <<= instead of =. Do not call .copied() now.");
+        #[cfg(not(feature = "f32_only"))]
         assert!(
             if let UniFloatChoice::Mpfr { .. } = C {
                 self.mpfr_fixeds[0].d != self.mpfr_limps_ptr()
@@ -334,6 +352,7 @@ impl <const C: UniFloatChoice> UniFloat<C> where
     /// operator.
     pub fn copied(&mut self) -> &mut Self {
         self.assert_copy_not_fixed();
+        #[cfg(not(feature = "f32_only"))]
         if let UniFloatChoice::Mpfr { .. } = C {
             self.mpfr_fixeds[0].d = self.mpfr_limps_ptr();
         }
