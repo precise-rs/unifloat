@@ -1,6 +1,11 @@
 #![allow(incomplete_features)]
-#![feature(const_generics, const_evaluatable_checked, const_panic, int_bits_const, const_maybe_uninit_assume_init)]
+#![feature(const_generics, const_evaluatable_checked, const_panic, int_bits_const, const_maybe_uninit_assume_init, const_fn_floating_point_arithmetic)]
 #![no_std]
+
+use core::{f32::MIN_10_EXP, i32::MAX};
+
+use mpfr::prec_round;
+
 mod tests;
 
 use {core::ops, core::ptr, core::mem, core::num, gmp_mpfr_sys::{mpfr, gmp}};
@@ -24,18 +29,23 @@ use {core::ops, core::ptr, core::mem, core::num, gmp_mpfr_sys::{mpfr, gmp}};
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct MpfrBounds {
     /// Intentionally private, to guard integrity.
-    precision_bits_length: usize,
-    limb_parts_length: usize
+    precision_bits: usize,
+    limb_parts: usize
 }
 
 impl MpfrBounds {
-    const fn for_precision_bits_length(precision_bits_length: usize) -> Self {
+    const fn for_precision_binary(precision_bits: usize) -> Self {
         Self {
-            precision_bits_length,
+            precision_bits,
             /// Based on mfpr::MPFR_DECL_INIT
-            limb_parts_length: (precision_bits_length - 1) / gmp::NUMB_BITS 
+            limb_parts: (precision_bits - 1) / gmp::NUMB_BITS 
                 as usize + 1
         }
+    }
+    // Once https://github.com/rust-lang/rust/pull/80918 is merged, consider #![feature(int_log)] instead. Then see if you can make this function `const`.
+    fn for_precision_decimal(precision_decimal: usize) -> Self {
+        let precision_bits = (precision_decimal as f32 * core::f32::consts::LOG10_2).ceil() as usize;
+        Self::for_precision_binary(precision_bits)
     }
 }
 
@@ -53,38 +63,219 @@ type UniF64 = UniFloat<{ UniFloatChoice::F64 }>;
 type UniTwoFloat = UniFloat<{ UniFloatChoice::TwoFloat }>;
 // Types with names starting with `UniMpfrLimbX` use `X` number of limbs.
 type UniMpfrLimb1Prec1 = UniFloat<{ UniFloatChoice::Mpfr { bounds: MpfrBounds {
-    limb_parts_length: 1,
-    precision_bits_length: 1,
+    limb_parts: 1,
+    precision_bits: 1,
 }}}>;
 
 const ONE_LIMB_PRECISION: usize = gmp::limb_t::BITS as usize;
 // Types with names like UniMpfrLimbxPrecAll use all the precision available
 // for their number of limbs.
 type UniMpfrLimb2PrecAll = UniFloat<{ UniFloatChoice::Mpfr { bounds: MpfrBounds {
-    limb_parts_length: 2,
-    precision_bits_length: 2 * ONE_LIMB_PRECISION,
+    limb_parts: 2,
+    precision_bits: 2 * ONE_LIMB_PRECISION,
 }}}>;
 
-impl UniFloatChoice {
-    pub fn precision_bits_length(&self) -> usize {
-        match *self {
-            UniFloatChoice::F32 => f32::MANTISSA_DIGITS as usize,
-            UniFloatChoice::F64 => f64::MANTISSA_DIGITS as usize,
-            UniFloatChoice::TwoFloat => 2 * f64::MANTISSA_DIGITS as usize,
-            UniFloatChoice::Mpfr {bounds: MpfrBounds { precision_bits_length, ..} } => precision_bits_length
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UniFloatBoundsBase { DECIMAL, BINARY }
+
+/// Definition of bounds guaranteed by a related UniFloat type. BASE is a const generic rather than a field, because binary and decimal bounds are not interchangeable (due to rounding). Prefer BASE being BINARY.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UniFloatBounds<const BASE: UniFloatBoundsBase> {
+    // Matches gmp::limb_t, which in GMP C library is mp_limb_t, which is unsigned.
+    precision: usize,
+    min_exponent: isize,
+    max_exponent: isize
+}
+
+pub trait UniFloatBoundsToChoice {
+    fn to_choice(&self) -> UniFloatChoice;
+}
+
+impl UniFloatBoundsToChoice for UniFloatBounds<{ UniFloatBoundsBase::BINARY }> {
+    fn to_choice(&self) -> UniFloatChoice {
+        if F32_BOUNDS_BINARY.covers(self) {
+            UniFloatChoice::F32
+        } else if F64_BOUNDS_BINARY.covers(self) {
+            UniFloatChoice::F64
+        } else if TWOFLOAT_BOUNDS_BINARY.covers(self) {
+            UniFloatChoice::TwoFloat
+        } else {
+            UniFloatChoice::Mpfr {
+                bounds: MpfrBounds::for_precision_binary(self.precision)
+            }
         }
+    }
+}
+
+impl UniFloatBoundsToChoice for UniFloatBounds<{ UniFloatBoundsBase::DECIMAL }> {
+    fn to_choice(&self) -> UniFloatChoice {
+        panic!()
+    }
+}
+
+impl <const BASE: UniFloatBoundsBase> UniFloatBounds<BASE> {
+    pub fn new(precision: usize, min_exponent: isize, max_exponent: isize) -> Self {
+        Self { precision, min_exponent, max_exponent}
+    }
+
+    /// Whether `self` accommodates all needs of `other`. Prefer both `self` and `other` at BINARY base.
+    pub const fn covers(&self, other: &Self) -> bool {
+        self.precision >= other.precision && self.min_exponent <= other.min_exponent && self.max_exponent >= other.max_exponent
     }
 
     /// A UniFloat instance based on the returned UniFloatChoice may also accommodate
     /// values outside the given bounds, but it's guaranteed to fulfill the
-    /// given bounds.
-    pub const fn for_binary_bounds(
-        precision_bits_length: usize,
+    /// given bounds. Prefer `bounds` at binary base.
+    fn accommodate(&self) -> UniFloatChoice
+    where UniFloatBounds<{ BASE }>: UniFloatBoundsToChoice {
+        UniFloatBoundsToChoice::to_choice(self)
+    }
+}
+
+// Until f32.ceil() becomes a `const fn`.
+const fn ceil(v: f32) -> isize {
+    let cast = v as isize;
+    let cast_back = cast as f32;
+    if v <= cast_back {
+        cast
+    } else {
+        cast + 1
+    }
+}
+
+const F32_BOUNDS_BINARY: UniFloatBounds<{ UniFloatBoundsBase::BINARY }> = UniFloatBounds::<{ UniFloatBoundsBase::BINARY }> {
+    precision: f32::MANTISSA_DIGITS as usize,
+    min_exponent: f32::MIN_EXP as isize,
+    max_exponent: f32::MAX_EXP as isize
+};
+const F32_BOUNDS_DECIMAL: UniFloatBounds<{ UniFloatBoundsBase::DECIMAL }> = UniFloatBounds::<{ UniFloatBoundsBase::DECIMAL }> {
+    precision: f32::DIGITS as usize,
+    min_exponent: f32::MIN_10_EXP as isize,
+    max_exponent: f32::MAX_10_EXP as isize
+};
+const F64_BOUNDS_BINARY: UniFloatBounds<{ UniFloatBoundsBase::BINARY }> = UniFloatBounds::<{ UniFloatBoundsBase::BINARY }> {
+    precision: f64::MANTISSA_DIGITS as usize,
+    min_exponent: f64::MIN_EXP as isize,
+    max_exponent: f64::MAX_EXP as isize
+};
+const F64_BOUNDS_DECIMAL: UniFloatBounds<{ UniFloatBoundsBase::DECIMAL }> = UniFloatBounds::<{ UniFloatBoundsBase::DECIMAL }> {
+    precision: f64::DIGITS as usize,
+    min_exponent: f64::MIN_10_EXP as isize,
+    max_exponent: f64::MAX_10_EXP as isize
+};
+const TWOFLOAT_BOUNDS_BINARY: UniFloatBounds<{ UniFloatBoundsBase::BINARY }> = UniFloatBounds::<{ UniFloatBoundsBase::BINARY }> {
+    precision: 2* f64::MANTISSA_DIGITS as usize,
+    min_exponent: f64::MIN_EXP as isize,
+    max_exponent: f64::MAX_EXP as isize
+};
+const TWOFLOAT_BOUNDS_DECIMAL: UniFloatBounds<{ UniFloatBoundsBase::DECIMAL }> = UniFloatBounds::<{ UniFloatBoundsBase::DECIMAL }> {
+    precision: 2 * f64::DIGITS as usize,
+    min_exponent: f64::MIN_10_EXP as isize,
+    max_exponent: f64::MAX_10_EXP as isize
+};
+
+/// Helper so we can return constants from const-generic UniFloatChoice::bounds().
+/// Thanks to Kevin Reid https://github.com/kpreid for this pattern.
+pub trait UniFloatChoiceToBounds {
+    fn to_bounds(choice: &UniFloatChoice) -> Self;
+}
+
+impl UniFloatChoiceToBounds for UniFloatBounds<{ UniFloatBoundsBase::BINARY }> {
+    fn to_bounds(choice: &UniFloatChoice) -> Self {
+        match *choice {
+            UniFloatChoice::F32 => F32_BOUNDS_BINARY,
+            UniFloatChoice::F64 => F64_BOUNDS_BINARY,
+            UniFloatChoice::TwoFloat => TWOFLOAT_BOUNDS_BINARY,
+            UniFloatChoice::Mpfr { bounds: MpfrBounds { precision_bits, ..}} => UniFloatBounds::<{ UniFloatBoundsBase::BINARY }> {
+                precision: precision_bits,
+                min_exponent: isize::MIN,
+                max_exponent: isize::MAX
+            }
+        }
+    }
+}
+impl UniFloatChoiceToBounds for UniFloatBounds<{ UniFloatBoundsBase::DECIMAL }> {
+    fn to_bounds(choice: &UniFloatChoice) -> Self {
+        match *choice {
+            UniFloatChoice::F32 => F32_BOUNDS_DECIMAL,
+            UniFloatChoice::F64 => F64_BOUNDS_DECIMAL,
+            UniFloatChoice::TwoFloat => TWOFLOAT_BOUNDS_DECIMAL,
+            UniFloatChoice::Mpfr { bounds: MpfrBounds { precision_bits, ..}} => UniFloatBounds::<{ UniFloatBoundsBase::DECIMAL }> {
+                precision: (precision_bits as f32 * core::f32::consts::LOG10_2).floor() as usize,
+                min_exponent: (isize::MIN as f32 * core::f32::consts::LOG10_2).ceil() as isize,
+                max_exponent: (isize::MAX as f32 * core::f32::consts::LOG10_2).floor() as isize
+            }
+        }
+    }
+}
+
+impl UniFloatChoice {
+    pub fn bounds<const BASE: UniFloatBoundsBase>(&self) -> UniFloatBounds::<{ UniFloatBoundsBase::BINARY }>
+    where
+    UniFloatBounds<BASE>: UniFloatChoiceToBounds
+    {
+        UniFloatChoiceToBounds::to_bounds(self)
+    }
+    const fn boundsBinary(&self) -> UniFloatBounds::<{ UniFloatBoundsBase::BINARY }>  {
+        panic!()
+        /* // Getting both binary & decimal may not seem efficient, but let's leave it for the compiler to optimize.
+        let (precision_binary, precision_decimal) = match *self {
+            UniFloatChoice::F32 => (f32::MANTISSA_DIGITS as usize, f32::DIGITS as usize),
+            UniFloatChoice::F64 => (f64::MANTISSA_DIGITS as usize, f64::DIGITS as usize),
+            UniFloatChoice::TwoFloat => (2 * f64::MANTISSA_DIGITS as usize, 2 * f64::DIGITS as usize),
+            UniFloatChoice::Mpfr {
+                bounds: MpfrBounds { precision_bits, ..}
+            } => (precision_bits,
+                  (precision_bits as f32 * core::f32::consts::LOG10_2) as usize
+                 )
+        };
+        let (min_exponent_binary, min_exponent_decimal) = match *self {
+            UniFloatChoice::F32 => (
+                f32::MIN_EXP as isize,
+                f32::MIN_10_EXP as isize),
+            UniFloatChoice::F64 | UniFloatChoice::TwoFloat => (
+                f64::MIN_EXP as isize,
+                f64::MIN_10_EXP as isize),
+            UniFloatChoice::Mpfr {..} => (
+                isize::MIN,
+                ceil(isize::MIN as f32 * core::f32::consts::LOG10_2) as isize)
+        };
+        let (max_exponent_binary, max_exponent_decimal) = match *self {
+            UniFloatChoice::F32 => (
+                f32::MAX_EXP as isize, 
+                f32::MAX_10_EXP as isize),
+            UniFloatChoice::F64 | UniFloatChoice::TwoFloat => (
+                f64::MIN_EXP as isize,
+                f64::MAX_10_EXP as isize),
+            UniFloatChoice::Mpfr {..} => (
+                isize::MAX,
+                ((isize::MAX as f32) * core::f32::consts::LOG10_2) as isize)
+        };
+        match BASE {
+            UniFloatBoundsBase::BINARY => {
+                UniFloatBounds::<{ BASE }> {
+                    precision: precision_binary,
+                    min_exponent: min_exponent_binary,
+                    max_exponent: max_exponent_binary
+                }
+            },
+            UniFloatBoundsBase::DECIMAL => {
+                UniFloatBounds::<{ BASE }> {
+                    precision: precision_decimal,
+                    min_exponent: min_exponent_decimal,
+                    max_exponent: max_exponent_decimal
+                }
+            }
+        }*/
+    }
+
+    /*pub const fn for_bounds<const BASE: UniFloatBoundsBase>(
+        precision_bits: usize,
         min_exponent: i32,
         max_exponent: i32
     ) -> UniFloatChoice {
         assert!(
-            precision_bits_length > 0,
+            precision > 0,
             "MPFR requires the minimum precision (MPFR_PREC_MIN) of 1 bit."
         );
 
@@ -105,10 +296,10 @@ impl UniFloatChoice {
         }
         else {
             UniFloatChoice::Mpfr {
-                bounds: MpfrBounds::for_precision_bits_length(precision_bits_length)
+                bounds: MpfrBounds::for_precision_bits(precision_bits_length)
             }
         }
-    }
+    }*/
 
     /// for_binary_bounds(...) tells you what UniFloatChoice you need to cover
     /// your bounds. But how much more precision can you fit in the same memory?
@@ -124,49 +315,14 @@ impl UniFloatChoice {
     /// return (a copy of) self, or a new instance.
     pub const fn most_precise_for_same_space(&self) -> Self {
         match *self {
-            UniFloatChoice::Mpfr { bounds: MpfrBounds { limb_parts_length, .. }} =>
+            UniFloatChoice::Mpfr { bounds: MpfrBounds { limb_parts: limb_parts_length, .. }} =>
                 // Based on reverse of mfpr::MPFR_DECL_INIT
                 UniFloatChoice::Mpfr {
-                    bounds: MpfrBounds::for_precision_bits_length(
+                    bounds: MpfrBounds::for_precision_binary(
                         limb_parts_length * gmp::NUMB_BITS as usize
                     )
                 },
             other => other
-        }
-    }
-
-    pub const fn f32_parts_length(&self) -> usize {
-        match self {
-            UniFloatChoice::F32 => 1,
-            _ => 0
-        }
-    }
-
-    pub const fn f64_parts_length(&self) -> usize {
-        match self {
-            UniFloatChoice::F64 => 1,
-            _ => 0
-        }
-    }
-
-    pub const fn twofloat_parts_length(&self) -> usize {
-        match self {
-            UniFloatChoice::TwoFloat => 1,
-            _ => 0
-        }
-    }
-
-    pub const fn mpfr_fixed_parts_length(&self) -> usize {
-        match self {
-            UniFloatChoice::Mpfr{ .. } => 1,
-            _ => 0
-        }
-    }
-
-    pub const fn mpfr_limb_parts_length(&self) -> usize {
-        match *self {
-            UniFloatChoice::Mpfr { bounds: MpfrBounds {limb_parts_length, ..} } => limb_parts_length,
-            _ => 0
         }
     }
 
@@ -177,7 +333,7 @@ impl UniFloatChoice {
             UniFloatChoice::F32 => mem::size_of::<UniF32>(),
             UniFloatChoice::F64 => mem::size_of::<UniF64>(),
             UniFloatChoice::TwoFloat => mem::size_of::<UniTwoFloat>(),
-            UniFloatChoice::Mpfr { bounds: MpfrBounds {limb_parts_length, ..}} => {
+            UniFloatChoice::Mpfr { bounds: MpfrBounds {limb_parts: limb_parts_length, ..}} => {
                 mem::size_of::<UniMpfrLimb1Prec1>()
                     + (limb_parts_length - 1)
                       * (   mem::size_of::<UniMpfrLimb2PrecAll>()
@@ -196,31 +352,48 @@ impl UniFloatChoice {
 /// otherwise we were getting "private type `fn(isize) -> usize
 /// f32_parts_length}` in public interface (error E0446)".
 pub const fn f32_parts_length(c: UniFloatChoice) -> usize {
-    c.f32_parts_length()
+    match c {
+        UniFloatChoice::F32 => 1,
+        _ => 0
+    }
+
 }
 type F32Parts<const C: UniFloatChoice> = [f32; f32_parts_length(C)];
 
 pub const fn f64_parts_length(c: UniFloatChoice) -> usize {
-    c.f64_parts_length()
+    match c {
+        UniFloatChoice::F64 => 1,
+        _ => 0
+    }
+
 }
 #[allow(dead_code)] // not used with f32_only feature.
 type F64Parts<const C: UniFloatChoice> = [f64; f64_parts_length(C)];
 
 pub const fn twofloat_parts_length(c: UniFloatChoice) -> usize {
-    c.twofloat_parts_length()
+    match c {
+        UniFloatChoice::TwoFloat => 1,
+        _ => 0
+    }
 }
 #[allow(dead_code)]
 type TwoFloatParts<const C: UniFloatChoice> = [twofloat::TwoFloat; twofloat_parts_length(C)];
 
 pub const fn mpfr_limb_parts_length(c: UniFloatChoice) -> usize {
-    c.mpfr_limb_parts_length()
+    match c {
+        UniFloatChoice::Mpfr { bounds: MpfrBounds {limb_parts: limb_parts_length, ..} } => limb_parts_length,
+        _ => 0
+    }
 }
 type MpfrLimbPart = mem::MaybeUninit<gmp::limb_t>;
 #[allow(dead_code)]
 type MpfrLimbParts<const C: UniFloatChoice> = [MpfrLimbPart; mpfr_limb_parts_length(C)];
 
 pub const fn mpfr_fixed_parts_length(c: UniFloatChoice) -> usize {
-    c.mpfr_fixed_parts_length()
+    match c {
+        UniFloatChoice::Mpfr{ .. } => 1,
+        _ => 0
+    }
 }
 #[allow(dead_code)]
 type MpfrFixedParts<const C: UniFloatChoice> = [mpfr::mpfr_t;mpfr_fixed_parts_length(C)];

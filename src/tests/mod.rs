@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 mod type_sizes;
+mod unifloat_bounds;
 
 use crate::{MpfrBounds, ONE_LIMB_PRECISION, UniFloat, UniFloatChoice, UniF32,
     UniF64, UniTwoFloat, UniMpfrLimb1Prec1, UniMpfrLimb2PrecAll};

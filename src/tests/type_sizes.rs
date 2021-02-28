@@ -6,12 +6,12 @@ use crate::{MpfrBounds, ONE_LIMB_PRECISION, UniFloat, UniFloatChoice, UniF32,
 // available for their number of limbs (so they can't fit into a smaller
 // number of limbs), but they don't use the whole available precision.
 type UniMpfrLimb1PrecMost = UniFloat<{ UniFloatChoice::Mpfr { bounds: MpfrBounds {
-    limb_parts_length: 1,
-    precision_bits_length: 1 * ONE_LIMB_PRECISION,
+    limb_parts: 1,
+    precision_bits: 1 * ONE_LIMB_PRECISION,
 }}}>;
 type UniMpfrLimb1PrecAll = UniFloat<{ UniFloatChoice::Mpfr { bounds: MpfrBounds {
-    limb_parts_length: 1,
-    precision_bits_length: 1 * ONE_LIMB_PRECISION,
+    limb_parts: 1,
+    precision_bits: 1 * ONE_LIMB_PRECISION,
 }}}>; //@TODO test most_precise_for_same_space
 // This helps when calculating size and alignment of `UniFloat.unifloat_self`
 // pointer. That
