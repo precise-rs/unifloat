@@ -2,13 +2,12 @@
 #![feature(const_generics, const_evaluatable_checked, const_panic, int_bits_const, const_maybe_uninit_assume_init, const_fn_floating_point_arithmetic)]
 #![no_std]
 
-use core::{f32::MIN_10_EXP, i32::MAX};
-
-use mpfr::prec_round;
-
+mod operands;
 mod tests;
 
 use {core::ops, core::ptr, core::mem, core::num, gmp_mpfr_sys::{mpfr, gmp}};
+
+pub use operands::{OperandRef, OperandMutRef};
 
 /// Across this crate: Const generic parameter S is NOT necessarily a number of
 /// 64bit extras, but a number of any and all 64-bit
@@ -87,6 +86,8 @@ pub struct UniFloatBounds<const BASE: UniFloatBoundsBase> {
     max_exponent: isize
 }
 
+/// Helper for returning constants from a const generic `UniFloatBounds`.
+/// Not a part of public API. It's public only because of Rust requirements.
 pub trait UniFloatBoundsToChoice {
     fn to_choice(&self) -> UniFloatChoice;
 }
@@ -127,19 +128,8 @@ impl <const BASE: UniFloatBoundsBase> UniFloatBounds<BASE> {
     /// values outside the given bounds, but it's guaranteed to fulfill the
     /// given bounds. Prefer `bounds` at binary base.
     fn accommodate(&self) -> UniFloatChoice
-    where UniFloatBounds<{ BASE }>: UniFloatBoundsToChoice {
+    where Self: UniFloatBoundsToChoice {
         UniFloatBoundsToChoice::to_choice(self)
-    }
-}
-
-// Until f32.ceil() becomes a `const fn`.
-const fn ceil(v: f32) -> isize {
-    let cast = v as isize;
-    let cast_back = cast as f32;
-    if v <= cast_back {
-        cast
-    } else {
-        cast + 1
     }
 }
 
@@ -175,6 +165,7 @@ const TWOFLOAT_BOUNDS_DECIMAL: UniFloatBounds<{ UniFloatBoundsBase::DECIMAL }> =
 };
 
 /// Helper so we can return constants from const-generic UniFloatChoice::bounds().
+/// Not a part of public API. It's public only because of Rust requirements.
 /// Thanks to Kevin Reid https://github.com/kpreid for this pattern.
 pub trait UniFloatChoiceToBounds {
     fn to_bounds(choice: &UniFloatChoice) -> Self;
@@ -216,90 +207,6 @@ impl UniFloatChoice {
     {
         UniFloatChoiceToBounds::to_bounds(self)
     }
-    const fn boundsBinary(&self) -> UniFloatBounds::<{ UniFloatBoundsBase::BINARY }>  {
-        panic!()
-        /* // Getting both binary & decimal may not seem efficient, but let's leave it for the compiler to optimize.
-        let (precision_binary, precision_decimal) = match *self {
-            UniFloatChoice::F32 => (f32::MANTISSA_DIGITS as usize, f32::DIGITS as usize),
-            UniFloatChoice::F64 => (f64::MANTISSA_DIGITS as usize, f64::DIGITS as usize),
-            UniFloatChoice::TwoFloat => (2 * f64::MANTISSA_DIGITS as usize, 2 * f64::DIGITS as usize),
-            UniFloatChoice::Mpfr {
-                bounds: MpfrBounds { precision_bits, ..}
-            } => (precision_bits,
-                  (precision_bits as f32 * core::f32::consts::LOG10_2) as usize
-                 )
-        };
-        let (min_exponent_binary, min_exponent_decimal) = match *self {
-            UniFloatChoice::F32 => (
-                f32::MIN_EXP as isize,
-                f32::MIN_10_EXP as isize),
-            UniFloatChoice::F64 | UniFloatChoice::TwoFloat => (
-                f64::MIN_EXP as isize,
-                f64::MIN_10_EXP as isize),
-            UniFloatChoice::Mpfr {..} => (
-                isize::MIN,
-                ceil(isize::MIN as f32 * core::f32::consts::LOG10_2) as isize)
-        };
-        let (max_exponent_binary, max_exponent_decimal) = match *self {
-            UniFloatChoice::F32 => (
-                f32::MAX_EXP as isize, 
-                f32::MAX_10_EXP as isize),
-            UniFloatChoice::F64 | UniFloatChoice::TwoFloat => (
-                f64::MIN_EXP as isize,
-                f64::MAX_10_EXP as isize),
-            UniFloatChoice::Mpfr {..} => (
-                isize::MAX,
-                ((isize::MAX as f32) * core::f32::consts::LOG10_2) as isize)
-        };
-        match BASE {
-            UniFloatBoundsBase::BINARY => {
-                UniFloatBounds::<{ BASE }> {
-                    precision: precision_binary,
-                    min_exponent: min_exponent_binary,
-                    max_exponent: max_exponent_binary
-                }
-            },
-            UniFloatBoundsBase::DECIMAL => {
-                UniFloatBounds::<{ BASE }> {
-                    precision: precision_decimal,
-                    min_exponent: min_exponent_decimal,
-                    max_exponent: max_exponent_decimal
-                }
-            }
-        }*/
-    }
-
-    /*pub const fn for_bounds<const BASE: UniFloatBoundsBase>(
-        precision_bits: usize,
-        min_exponent: i32,
-        max_exponent: i32
-    ) -> UniFloatChoice {
-        assert!(
-            precision > 0,
-            "MPFR requires the minimum precision (MPFR_PREC_MIN) of 1 bit."
-        );
-
-        if precision_bits_length <= f32::MANTISSA_DIGITS as usize
-        && min_exponent >= f32::MIN_EXP
-        && max_exponent <= f32::MAX_EXP {
-            UniFloatChoice::F32
-        } else
-        if precision_bits_length <= f64::MANTISSA_DIGITS as usize
-        && min_exponent >= f64::MIN_EXP
-        && max_exponent <= f64::MAX_EXP {
-            UniFloatChoice::F64
-        } else
-        if precision_bits_length <= 2* f64::MANTISSA_DIGITS as usize
-        && min_exponent >= f64::MIN_EXP
-        && max_exponent <= f64::MAX_EXP {
-            UniFloatChoice::TwoFloat
-        }
-        else {
-            UniFloatChoice::Mpfr {
-                bounds: MpfrBounds::for_precision_bits(precision_bits_length)
-            }
-        }
-    }*/
 
     /// for_binary_bounds(...) tells you what UniFloatChoice you need to cover
     /// your bounds. But how much more precision can you fit in the same memory?
@@ -327,7 +234,9 @@ impl UniFloatChoice {
     }
 
     /// Size of any `UniFloat` instance created for this `UniFloatChoice`, in
-    /// bytes. Beware that this involves extra space in debug mode.
+    /// bytes. Beware that this involves extra space when in debug mode.
+    /// Also, beware that without `f32_only` feature, F32-based UniFloat takes as much space
+    /// as F64-based UniFloat (when using either on a 64 bit platform).
     pub const fn unifloat_size(&self) -> usize {
         match *self {
             UniFloatChoice::F32 => mem::size_of::<UniF32>(),
@@ -345,12 +254,11 @@ impl UniFloatChoice {
     
 }
 
-/// `const fun` functions here whose names end with _parts_length(s: isize) -> usize
-/// return the number of entries/slots of the respective type (f32, f64...) to
+// `const fun` functions here whose names end with _parts_length(s: isize) -> usize
+// return the number of entries/slots of the respective type (f32, f64...) to
+/// Number of `f32` parts in UniFloat. Either 0 or 1.
 /// be used by the respective parts. (Not a number of bytes.)
-/// These functions are not a part of public API. They are public only because
-/// otherwise we were getting "private type `fn(isize) -> usize
-/// f32_parts_length}` in public interface (error E0446)".
+/// Not a part of public API. It's public only because of Rust requirements.
 pub const fn f32_parts_length(c: UniFloatChoice) -> usize {
     match c {
         UniFloatChoice::F32 => 1,
@@ -360,6 +268,8 @@ pub const fn f32_parts_length(c: UniFloatChoice) -> usize {
 }
 type F32Parts<const C: UniFloatChoice> = [f32; f32_parts_length(C)];
 
+/// Number of `f64` parts in UniFloat. Either 0 or 1.
+/// Not a part of public API. It's public only because of Rust requirements.
 pub const fn f64_parts_length(c: UniFloatChoice) -> usize {
     match c {
         UniFloatChoice::F64 => 1,
@@ -370,6 +280,8 @@ pub const fn f64_parts_length(c: UniFloatChoice) -> usize {
 #[allow(dead_code)] // not used with f32_only feature.
 type F64Parts<const C: UniFloatChoice> = [f64; f64_parts_length(C)];
 
+/// Number of `twofloat::TwoFloat` parts in UniFloat. Either 0 or 1.
+/// Not a part of public API. It's public only because of Rust requirements.
 pub const fn twofloat_parts_length(c: UniFloatChoice) -> usize {
     match c {
         UniFloatChoice::TwoFloat => 1,
@@ -379,6 +291,8 @@ pub const fn twofloat_parts_length(c: UniFloatChoice) -> usize {
 #[allow(dead_code)]
 type TwoFloatParts<const C: UniFloatChoice> = [twofloat::TwoFloat; twofloat_parts_length(C)];
 
+/// Number of `gmp::limb_t` parts in UniFloat. Either 0 or a positive number, depending on precision indicated by `c`.
+/// Not a part of public API. It's public only because of Rust requirements.
 pub const fn mpfr_limb_parts_length(c: UniFloatChoice) -> usize {
     match c {
         UniFloatChoice::Mpfr { bounds: MpfrBounds {limb_parts: limb_parts_length, ..} } => limb_parts_length,
@@ -389,6 +303,8 @@ type MpfrLimbPart = mem::MaybeUninit<gmp::limb_t>;
 #[allow(dead_code)]
 type MpfrLimbParts<const C: UniFloatChoice> = [MpfrLimbPart; mpfr_limb_parts_length(C)];
 
+/// Number of `mpfr::mpfr_t` parts in UniFloat. Either 0 or 1.
+/// Not a part of public API. It's public only because of Rust requirements.
 pub const fn mpfr_fixed_parts_length(c: UniFloatChoice) -> usize {
     match c {
         UniFloatChoice::Mpfr{ .. } => 1,
@@ -404,24 +320,29 @@ pub struct UniFloat<const C: UniFloatChoice> where
 [f32; f32_parts_length(C)]: Sized,
 [f64; f64_parts_length(C)]: Sized,
 [twofloat::TwoFloat; twofloat_parts_length(C)]: Sized,
-[MpfrLimbPart; mpfr_limb_parts_length(C)]: Sized,
 [mpfr::mpfr_t; mpfr_fixed_parts_length(C)]: Sized,
+[MpfrLimbPart; mpfr_limb_parts_length(C)]: Sized,
 {
     // When you initialize the arrays with `[item; array_length]`, `item` gets evaluated, even if
-    /// array_length is zero. However, rustc + LLVM can optimize it away.
+    // array_length is zero. However, rustc + LLVM can optimize it away.
     f32s: F32Parts<C>,
     #[cfg(not(feature = "f32_only"))]
     f64s: F64Parts<C>,
     #[cfg(not(feature = "f32_only"))]
     twofloats: TwoFloatParts<C>,
-    #[cfg(not(feature = "f32_only"))]
-    mpfr_limbs: MpfrLimbParts<C>,
+
     #[cfg(not(feature = "f32_only"))]
     mpfr_fixeds: MpfrFixedParts<C>,
+    #[cfg(not(feature = "f32_only"))]
+    mpfr_limbs: MpfrLimbParts<C>,
+
     #[cfg(debug_assertions)]
     /// A pointer to UniFloat instance itself. Used for extra .copied() check.
-    /// Beneficial for testing the right usage of the API even without UniFloatChoice::Mpfr.
-    unifloat_self: * const UniFloat<C>
+    /// Beneficial for testing the right usage of the .copied() and <<= API even without UniFloatChoice::Mpfr.
+    unifloat_self: * const UniFloat<C>,
+    #[cfg(debug_assertions)]
+    /// A (reasonable only) safeguard that we apply .op_mut() on the same instance only once - until it's cleared with .copied() or <<=.
+    used_as_mut_ref_operand: bool
 }
 
 /// Used internally only while initializing an MPFR float. This is never leaked to the user.
@@ -440,8 +361,8 @@ impl <const C: UniFloatChoice> Default for UniFloat<C> where
 [f32; f32_parts_length(C)]: Sized,
 [f64; f64_parts_length(C)]: Sized,
 [twofloat::TwoFloat; twofloat_parts_length(C)]: Sized,
-[MpfrLimbPart; mpfr_limb_parts_length(C)]: Sized,
 [mpfr::mpfr_t; mpfr_fixed_parts_length(C)]: Sized,
+[MpfrLimbPart; mpfr_limb_parts_length(C)]: Sized,
 {
     fn default() -> Self {
         Self::NAN
@@ -452,8 +373,8 @@ impl <const C: UniFloatChoice> UniFloat<C> where
     [f32; f32_parts_length(C)]: Sized,
     [f64; f64_parts_length(C)]: Sized,
     [twofloat::TwoFloat; twofloat_parts_length(C)]: Sized,
-    [MpfrLimbPart; mpfr_limb_parts_length(C)]: Sized,
     [mpfr::mpfr_t; mpfr_fixed_parts_length(C)]: Sized,
+    [MpfrLimbPart; mpfr_limb_parts_length(C)]: Sized,
 {
     /// Not-a-Number.
     pub const NAN: Self = Self {
@@ -473,8 +394,11 @@ impl <const C: UniFloatChoice> UniFloat<C> where
             exp: INITIAL_MPFR_EXP,
             d: DUMMY_MPFR_LIMB_PTR
         }; mpfr_fixed_parts_length(C)],
+
         #[cfg(debug_assertions)]
-        unifloat_self: ptr::null()
+        unifloat_self: ptr::null(),
+        #[cfg(debug_assertions)]
+        used_as_mut_ref_operand: false
     };
 
     // Based on `gmp_mpfr_sys::MPFR_DECL_INIT`, but here we accept non-mutable
@@ -486,11 +410,14 @@ impl <const C: UniFloatChoice> UniFloat<C> where
         }
     }
 
+    /// Assert that an instance is "copy fixed". If it has been used through `OperandMutRef`, then it must have been "cleared," too.
     #[inline]
     fn assert_copy_fixed(&self) {
         #[cfg(debug_assertions)] {
             assert!(self.unifloat_self == self,
-                "Must call .copied() first, or assign with <<= instead of =.");
+                "Must call .copied() first, or assign with <<= instead of =. (unifloat_self hasn't been fixed.)");
+            assert!(self.used_as_mut_ref_operand,
+                 "Must call .copied() first, or assign with <<= instead of =. (used_as_mut_ref_operand hasn't been cleared.)" );
         }
         #[cfg(not(feature = "f32_only"))]
         assert!(
@@ -499,14 +426,14 @@ impl <const C: UniFloatChoice> UniFloat<C> where
             } else {
                 true
             },
-            "MPFR fields indicate that the instance was copied without having called .copied() afterwards, or it was assign to with = instead of <<=. However, unifloat_self guard didn't catch this. Please report this to UniFloat along with how to reproduce it.");
+            "MPFR fields indicate that the instance was copied without having called .copied() afterwards, or it was assign to with = instead of <<=. However, unifloat_self guard didn't catch this. Please report this to UniFloat along with how to reproduce it in debug mode.");
     }
 
     #[inline]
     fn assert_copy_not_fixed(&self) {
         #[cfg(debug_assertions)]
         assert!(self.unifloat_self != self,
-            "Have already called .copied(), or assigned with <<= instead of =. Do not call .copied() now.");
+            "Have already called .copied(), or assigned with <<= instead of =. Do not call .copied() again.");
         #[cfg(not(feature = "f32_only"))]
         assert!(
             if let UniFloatChoice::Mpfr { .. } = C {
@@ -514,7 +441,7 @@ impl <const C: UniFloatChoice> UniFloat<C> where
             } else {
                 true
             },
-            "MPFR fields indicate that the code had already called .copied(), or assigned with <<= instead of =. However, unifloat_self guard didn't catch this. Please report this to UniFloat along with how to reproduce it.");
+            "MPFR fields indicate that the code had already called .copied(), or assigned with <<= instead of =. However, unifloat_self guard didn't catch this. Please report this to UniFloat along with how to reproduce it in debug mode.");
     }
 
     /// Call this exactly one after a UniFloat value is copied to:
@@ -534,14 +461,21 @@ impl <const C: UniFloatChoice> UniFloat<C> where
         }
         self
     }
+
+    #[inline]
+    fn assert_used_as_mut_ref_operand(&self) {
+        #[cfg(debug_assertions)]
+        assert!(self.used_as_mut_ref_operand,
+             "Must call .op_mut() first (to use with OperandMutRef. (used_as_mut_ref_operand hasn't been set.)" );
+    }
 }
 
 impl <const C: UniFloatChoice> ops::ShlAssign for UniFloat<C> where
 [f32; f32_parts_length(C)]: Sized,
 [f64; f64_parts_length(C)]: Sized,
 [twofloat::TwoFloat; twofloat_parts_length(C)]: Sized,
-[MpfrLimbPart; mpfr_limb_parts_length(C)]: Sized,
 [mpfr::mpfr_t; mpfr_fixed_parts_length(C)]: Sized,
+[MpfrLimbPart; mpfr_limb_parts_length(C)]: Sized,
 {
     fn shl_assign(&mut self, rhs: Self) {
         // DO NOT call rhs.assert_copy_fixed() here, because it's passed by value (rather than
@@ -555,8 +489,8 @@ impl <const C: UniFloatChoice> ops::ShlAssign<&Self> for UniFloat<C> where
 [f32; f32_parts_length(C)]: Sized,
 [f64; f64_parts_length(C)]: Sized,
 [twofloat::TwoFloat; twofloat_parts_length(C)]: Sized,
-[MpfrLimbPart; mpfr_limb_parts_length(C)]: Sized,
 [mpfr::mpfr_t; mpfr_fixed_parts_length(C)]: Sized,
+[MpfrLimbPart; mpfr_limb_parts_length(C)]: Sized,
 {
     fn shl_assign(&mut self, rhs: &Self) {
         rhs.assert_copy_fixed();
@@ -565,12 +499,13 @@ impl <const C: UniFloatChoice> ops::ShlAssign<&Self> for UniFloat<C> where
     }
 }
 
+/// Deprecated
 pub fn copied<const C: UniFloatChoice>(unifloats: &mut [UniFloat<C>]) where
 [f32; f32_parts_length(C)]: Sized,
 [f64; f64_parts_length(C)]: Sized,
 [twofloat::TwoFloat; twofloat_parts_length(C)]: Sized,
-[MpfrLimbPart; mpfr_limb_parts_length(C)]: Sized,
 [mpfr::mpfr_t; mpfr_fixed_parts_length(C)]: Sized,
+[MpfrLimbPart; mpfr_limb_parts_length(C)]: Sized,
 {
     for ref mut uf in unifloats {
         uf.copied();

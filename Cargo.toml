@@ -4,6 +4,10 @@ version = "0.1.0"
 authors = ["Peter Kehl <peter.kehl@gmail.com>"]
 edition = "2018"
 
+keywords = ["api", "arithmetic", "const-generics", "float", "floating-point",  "generic", "generics", "math", "mathematics", "maths", "numerics", "precision", "no-std"]
+categories = ["algorithms", "mathematics", "science", "api-bindings"]
+exclude = [".gitignore"]
+
 [features]
 f32_only = []
 default = []
