@@ -7,7 +7,7 @@ mod tests;
 
 use {core::ops, core::ptr, core::mem, core::num, gmp_mpfr_sys::{mpfr, gmp}};
 
-pub use operands::{OperandRef, OperandMutRef};
+pub use operands::{OperandRef, OperandRefMut};
 
 /// Across this crate: Const generic parameter S is NOT necessarily a number of
 /// 64bit extras, but a number of any and all 64-bit
@@ -87,8 +87,14 @@ pub struct UniFloatBounds<const BASE: UniFloatBoundsBase> {
 }
 
 /// Helper for returning constants from a const generic `UniFloatBounds`.
-/// Not a part of public API. It's public only because of Rust requirements.
+/// The trait itself sot a part of public API. It's public only because of Rust requirements.
 pub trait UniFloatBoundsToChoice {
+    /// A UniFloat instance based on the returned UniFloatChoice may also accommodate
+    /// values outside the given bounds, but it's guaranteed to fulfill the
+    /// given bounds. However, for MPFR it uses the exact number of bits, even if there were more
+    /// bits available for the same amount of allocated memory. For that use
+    /// UniFloatChoice::most_precise_for_same_space().
+    /// Prefer `bounds` at binary base.
     fn to_choice(&self) -> UniFloatChoice;
 }
 
@@ -122,14 +128,6 @@ impl <const BASE: UniFloatBoundsBase> UniFloatBounds<BASE> {
     /// Whether `self` accommodates all needs of `other`. Prefer both `self` and `other` at BINARY base.
     pub const fn covers(&self, other: &Self) -> bool {
         self.precision >= other.precision && self.min_exponent <= other.min_exponent && self.max_exponent >= other.max_exponent
-    }
-
-    /// A UniFloat instance based on the returned UniFloatChoice may also accommodate
-    /// values outside the given bounds, but it's guaranteed to fulfill the
-    /// given bounds. Prefer `bounds` at binary base.
-    fn accommodate(&self) -> UniFloatChoice
-    where Self: UniFloatBoundsToChoice {
-        UniFloatBoundsToChoice::to_choice(self)
     }
 }
 
@@ -201,11 +199,18 @@ impl UniFloatChoiceToBounds for UniFloatBounds<{ UniFloatBoundsBase::DECIMAL }> 
 }
 
 impl UniFloatChoice {
-    pub fn bounds<const BASE: UniFloatBoundsBase>(&self) -> UniFloatBounds::<{ UniFloatBoundsBase::BINARY }>
+    pub fn bounds<const BASE: UniFloatBoundsBase>(&self) -> UniFloatBounds::<{ BASE }>
     where
     UniFloatBounds<BASE>: UniFloatChoiceToBounds
     {
         UniFloatChoiceToBounds::to_bounds(self)
+    }
+
+    /// Whether `self` accommodates all needs of `other`. Prefer both `self` and `other` at BINARY base.
+    pub fn covers(&self, other: &Self) -> bool {
+        let mine = self.bounds::<{ UniFloatBoundsBase::BINARY }>();
+        let their = other.bounds::<{ UniFloatBoundsBase::BINARY }>();
+        mine.covers(&their)
     }
 
     /// for_binary_bounds(...) tells you what UniFloatChoice you need to cover
@@ -341,7 +346,7 @@ pub struct UniFloat<const C: UniFloatChoice> where
     /// Beneficial for testing the right usage of the .copied() and <<= API even without UniFloatChoice::Mpfr.
     unifloat_self: * const UniFloat<C>,
     #[cfg(debug_assertions)]
-    /// A (reasonable only) safeguard that we apply .op_mut() on the same instance only once - until it's cleared with .copied() or <<=.
+    /// A (limited) safeguard for confirming that we apply .op_mut() on the same instance only once - until it's cleared with .copied() or <<=.
     used_as_mut_ref_operand: bool
 }
 
@@ -450,6 +455,7 @@ impl <const C: UniFloatChoice> UniFloat<C> where
     /// struct/tuple/array. Also if was assigned from a result of an expression.
     /// However, do not call this if the value was assigned to with <<= 
     /// operator.
+    #[inline]
     pub fn copied(&mut self) -> &mut Self {
         self.assert_copy_not_fixed();
         #[cfg(not(feature = "f32_only"))]
@@ -458,6 +464,7 @@ impl <const C: UniFloatChoice> UniFloat<C> where
         }
         #[cfg(debug_assertions)] {
             self.unifloat_self = self as *const _ as *const UniFloat<C>;
+            self.used_as_mut_ref_operand = false;
         }
         self
     }
@@ -468,6 +475,18 @@ impl <const C: UniFloatChoice> UniFloat<C> where
         assert!(self.used_as_mut_ref_operand,
              "Must call .op_mut() first (to use with OperandMutRef. (used_as_mut_ref_operand hasn't been set.)" );
     }
+
+    #[inline]
+    pub fn op(&self) -> OperandRef<C> {
+        OperandRef::new(self)
+    }
+
+    // TODO consider better names:
+    // replace, in_place, mutate, op
+    #[inline]
+    pub fn op_mut(&mut self) -> OperandRefMut<C> {
+        OperandRefMut::new(self)
+    }
 }
 
 impl <const C: UniFloatChoice> ops::ShlAssign for UniFloat<C> where
@@ -477,6 +496,7 @@ impl <const C: UniFloatChoice> ops::ShlAssign for UniFloat<C> where
 [mpfr::mpfr_t; mpfr_fixed_parts_length(C)]: Sized,
 [MpfrLimbPart; mpfr_limb_parts_length(C)]: Sized,
 {
+    #[inline]
     fn shl_assign(&mut self, rhs: Self) {
         // DO NOT call rhs.assert_copy_fixed() here, because it's passed by value (rather than
         // by reference). So it should have been copy-fixed already.
@@ -499,15 +519,3 @@ impl <const C: UniFloatChoice> ops::ShlAssign<&Self> for UniFloat<C> where
     }
 }
 
-/// Deprecated
-pub fn copied<const C: UniFloatChoice>(unifloats: &mut [UniFloat<C>]) where
-[f32; f32_parts_length(C)]: Sized,
-[f64; f64_parts_length(C)]: Sized,
-[twofloat::TwoFloat; twofloat_parts_length(C)]: Sized,
-[mpfr::mpfr_t; mpfr_fixed_parts_length(C)]: Sized,
-[MpfrLimbPart; mpfr_limb_parts_length(C)]: Sized,
-{
-    for ref mut uf in unifloats {
-        uf.copied();
-    }
-}
