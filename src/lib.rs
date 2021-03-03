@@ -7,7 +7,7 @@ mod tests;
 
 use {core::ops, core::ptr, core::mem, core::num, gmp_mpfr_sys::{mpfr, gmp}};
 
-pub use operands::{OperandRef, OperandRefMut};
+pub use operands::{OperandMutated, OperandOwned};
 
 /// Across this crate: Const generic parameter S is NOT necessarily a number of
 /// 64bit extras, but a number of any and all 64-bit
@@ -346,8 +346,9 @@ pub struct UniFloat<const C: UniFloatChoice> where
     /// Beneficial for testing the right usage of the .copied() and <<= API even without UniFloatChoice::Mpfr.
     unifloat_self: * const UniFloat<C>,
     #[cfg(debug_assertions)]
-    /// A (limited) safeguard for confirming that we apply .op_mut() on the same instance only once - until it's cleared with .copied() or <<=.
-    used_as_mut_ref_operand: bool
+    /// A (limited) safeguard for confirming that we've applied .mutate() on the same instance only once - until it's cleared with .copied() or <<=.
+    /// Or that it's owned by OperandOwned.
+    used_as_operand_mutated: bool
 }
 
 /// Used internally only while initializing an MPFR float. This is never leaked to the user.
@@ -403,7 +404,7 @@ impl <const C: UniFloatChoice> UniFloat<C> where
         #[cfg(debug_assertions)]
         unifloat_self: ptr::null(),
         #[cfg(debug_assertions)]
-        used_as_mut_ref_operand: false
+        used_as_operand_mutated: false
     };
 
     // Based on `gmp_mpfr_sys::MPFR_DECL_INIT`, but here we accept non-mutable
@@ -415,13 +416,13 @@ impl <const C: UniFloatChoice> UniFloat<C> where
         }
     }
 
-    /// Assert that an instance is "copy fixed". If it has been used through `OperandMutRef`, then it must have been "cleared," too.
+    /// Assert that an instance is "copy fixed". If it has been used through `OperandMututated`, then it must have been "cleared," too.
     #[inline]
     fn assert_copy_fixed(&self) {
         #[cfg(debug_assertions)] {
             assert!(self.unifloat_self == self,
                 "Must call .copied() first, or assign with <<= instead of =. (unifloat_self hasn't been fixed.)");
-            assert!(self.used_as_mut_ref_operand,
+            assert!(self.used_as_operand_mutated,
                  "Must call .copied() first, or assign with <<= instead of =. (used_as_mut_ref_operand hasn't been cleared.)" );
         }
         #[cfg(not(feature = "f32_only"))]
@@ -464,28 +465,21 @@ impl <const C: UniFloatChoice> UniFloat<C> where
         }
         #[cfg(debug_assertions)] {
             self.unifloat_self = self as *const _ as *const UniFloat<C>;
-            self.used_as_mut_ref_operand = false;
+            self.used_as_operand_mutated = false;
         }
         self
     }
 
     #[inline]
-    fn assert_used_as_mut_ref_operand(&self) {
+    fn assert_used_as_operand_mutated(&self) {
         #[cfg(debug_assertions)]
-        assert!(self.used_as_mut_ref_operand,
-             "Must call .op_mut() first (to use with OperandMutRef. (used_as_mut_ref_operand hasn't been set.)" );
+        assert!(self.used_as_operand_mutated,
+             "Must call .mutate() first. (used_as_mut_ref_operand hasn't been set.)" );
     }
 
     #[inline]
-    pub fn op(&self) -> OperandRef<C> {
-        OperandRef::new(self)
-    }
-
-    // TODO consider better names:
-    // replace, in_place, mutate, op
-    #[inline]
-    pub fn op_mut(&mut self) -> OperandRefMut<C> {
-        OperandRefMut::new(self)
+    pub fn mutate(&mut self) -> OperandMutated<C> {
+        OperandMutated::new(self)
     }
 }
 

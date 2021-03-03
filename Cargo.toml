@@ -4,7 +4,8 @@ version = "0.1.0"
 authors = ["Peter Kehl <peter.kehl@gmail.com>"]
 edition = "2018"
 
-keywords = ["api", "arithmetic", "const-generics", "float", "floating-point",  "generic", "generics", "math", "mathematics", "maths", "numerics", "precision", "no-std"]
+keywords = ["api", "arithmetic", "const-generics", "cross-platform", "float", "floating-point",  "generic", "generics", "math", "mathematics", "maths", "number", "numerics", "optimization", "performance", "precision", "no-std", "no_std"]
+# \--> serde? See if rug has serde.
 categories = ["algorithms", "mathematics", "science", "api-bindings"]
 exclude = [".gitignore"]
 

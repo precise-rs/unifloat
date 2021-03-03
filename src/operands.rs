@@ -31,40 +31,10 @@ impl <'a, const C: UniFloatChoice> OperandOwned<C> where
     }
 }
 
-// TODO may not be needed at all? Use &UniFloat direct instead?
-// BUT we DO want to keep OperandRefMut, because it ensures that
-// the respective UniFloat has its used_as_mut_ref_operand.set.
-//
-// could be called OperandReadOnly
-#[derive(Clone, Copy, Debug)]
-pub struct OperandRef<'a, const C: UniFloatChoice> where
-[f32; f32_parts_length(C)]: Sized,
-[f64; f64_parts_length(C)]: Sized,
-[twofloat::TwoFloat; twofloat_parts_length(C)]: Sized,
-[mpfr::mpfr_t; mpfr_fixed_parts_length(C)]: Sized,
-[MpfrLimbPart; mpfr_limb_parts_length(C)]: Sized,
-{
-    float: &'a UniFloat<C>
-}
-
-impl <'a, const C: UniFloatChoice> OperandRef<'a, C> where
-[f32; f32_parts_length(C)]: Sized,
-[f64; f64_parts_length(C)]: Sized,
-[twofloat::TwoFloat; twofloat_parts_length(C)]: Sized,
-[mpfr::mpfr_t; mpfr_fixed_parts_length(C)]: Sized,
-[MpfrLimbPart; mpfr_limb_parts_length(C)]: Sized,
-{
-    pub(crate) fn new(float: &'a UniFloat<C>) -> Self {
-        Self {
-            float
-        }
-    }
-}
-
-/// Used for passing variables whose values are not needed anymore, and can be replaced with a result of a (potentially intermediate) operation. NOT for left sides of modify-and-assign operators (+=, -=...) - those operate on UniFloats directly.
-// could be called OperandReplace
+/// Used only for passing variables whose values are not needed anymore, and can be replaced with a result of a (potentially intermediate) operation. NOT for left sides of modify-and-assign operators (+=, -=...) - those operate on (mutable) UniFloats directly.
+/// Why don't we just use &ref UniFloat<C>? Because OperandMutated ensures that UniFloat.used_as_operand_mutated is set. That makes the user call .copied() or <<= on that UniFloat before reading from it again. That prevents accidental incorrect read access to that UniFloat.
 #[derive(Debug)]
-pub struct OperandRefMut<'a, const C: UniFloatChoice> where
+pub struct OperandMutated<'a, const C: UniFloatChoice> where
 [f32; f32_parts_length(C)]: Sized,
 [f64; f64_parts_length(C)]: Sized,
 [twofloat::TwoFloat; twofloat_parts_length(C)]: Sized,
@@ -74,7 +44,7 @@ pub struct OperandRefMut<'a, const C: UniFloatChoice> where
     float: &'a mut UniFloat<C>
 }
 
-impl <'a, const C: UniFloatChoice> OperandRefMut<'a, C> where
+impl <'a, const C: UniFloatChoice> OperandMutated<'a, C> where
 [f32; f32_parts_length(C)]: Sized,
 [f64; f64_parts_length(C)]: Sized,
 [twofloat::TwoFloat; twofloat_parts_length(C)]: Sized,
@@ -82,13 +52,16 @@ impl <'a, const C: UniFloatChoice> OperandRefMut<'a, C> where
 [MpfrLimbPart; mpfr_limb_parts_length(C)]: Sized,
 {
     pub(crate) fn new(float: &'a mut UniFloat<C>) -> Self {
+        float.assert_copy_fixed();
+        float.used_as_operand_mutated = true;
         Self {
             float
         }
     }
 }
 
-impl <'a, const C: UniFloatChoice> ops::Add<&UniFloat<C>> for OperandRefMut<'a, C> where
+impl <'a, const C: UniFloatChoice>
+ops::Add<&UniFloat<C>> for OperandMutated<'a, C> where
 [f32; f32_parts_length(C)]: Sized,
 [f64; f64_parts_length(C)]: Sized,
 [twofloat::TwoFloat; twofloat_parts_length(C)]: Sized,
@@ -103,8 +76,9 @@ impl <'a, const C: UniFloatChoice> ops::Add<&UniFloat<C>> for OperandRefMut<'a, 
 }
 
 // TODO use "existential" impl UniFloatable<C>, so that this works with
-// right hand: &UniFloat, OperandRefMut, OperandOwned.
-impl <const C: UniFloatChoice> ops::Add<&UniFloat<C>> for &UniFloat<C> where
+// right hand: &UniFloat, OperandMutated, OperandOwned.
+impl <const C: UniFloatChoice>
+ops::Add<&UniFloat<C>> for &UniFloat<C> where
 [f32; f32_parts_length(C)]: Sized,
 [f64; f64_parts_length(C)]: Sized,
 [twofloat::TwoFloat; twofloat_parts_length(C)]: Sized,
@@ -128,7 +102,7 @@ mod tests {
     type UniMpfr100bit = UniFloat<{ MPFR_100_BITS }>;
    
     #[test]
-    fn cant_have_multiple_operand_mut_ref() {
+    fn has_to_clear_operand_mutated_before_read() {
         let bounds = UniFloatBounds::<{ UniFloatBoundsBase::BINARY }>::new(100, -30, 30);
         let choice = bounds.to_choice(); //.most_precise_for_same_space();
         assert!( MPFR_100_BITS.covers(&choice));
@@ -136,6 +110,8 @@ mod tests {
 
         let mut workplace = nan_immutable;
         // protected:
-        //let (one, two) = (workplace.op_mut(), workplace.op_mut());
+        workplace.mutate();
+        // TODO now use read-only e.g. workplace + NAN
+        // assert that it failed
     }
 }
