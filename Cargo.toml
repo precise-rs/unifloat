@@ -2,23 +2,31 @@
 name = "unifloat"
 version = "0.1.0"
 authors = ["Peter Kehl <peter.kehl@gmail.com>"]
+license = "LGPL"
+homepage = ""
+documentation = ""
+description = """"""
 edition = "2018"
 
-keywords = ["api", "arithmetic", "const-generics", "cross-platform", "float", "floating-point",  "generic", "generics", "math", "mathematics", "maths", "number", "numerics", "optimization", "performance", "precision", "no-std", "no_std"]
+keywords = ["api", "arithmetic", "const-generics", "cross-platform", "float", "floating-point",  "generic", "generics", "gmp", "math", "mathematics", "maths", "mpfr", "number", "numeric", "numerics", "optimization", "performance", "precision", "stack", "no-std", "no_std"]
 # \--> serde? See if rug has serde.
-categories = ["algorithms", "mathematics", "science", "api-bindings"]
+categories = ["algorithms", "api-bindings", "mathematics", "no-std", "science"]
 exclude = [".gitignore"]
 
 [features]
-f32_only = []
+compact = [] # For using f32-based type on 64-bit architecture, with no MPFR
 default = []
+use-system-libs = ["gmp-mpfr-sys/use-system-libs"]
+force-cross = ["gmp-mpfr-sys/force-cross"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 twofloat = "0.4.1"
-
-[dependencies.gmp-mpfr-sys]
-version = "~1.4" # We depend on MPFR internals. Hence, as per https://crates.io/crates/gmp-mpfr-sys, the version starts with tilde ~.
-default-features = false
-features = ["mpfr"]
+pkg-version = "0.1.0"
+# Prefer one long line specs, so that `git diff` will be obvious.
+# TODO make optional
+# num-traits = {version = "0.2.14", features = ["libm"]}
+# We depend on MPFR internals. Hence, as per https://crates.io/crates/gmp-mpfr-sys, the version starts with tilde ~.
+# TODO make optional - not when in `compact`
+gmp-mpfr-sys = { version = "~1.4", default-features = false, features = ["mpfr"] }
