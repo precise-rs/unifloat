@@ -388,7 +388,7 @@ where
     [MpfrLimbPart; mpfr_limb_parts_length(C)]: Sized,
 {
     // When you initialize the arrays with `[item; array_length]`, `item` gets evaluated, even if
-    // array_length is zero. However, rustc + LLVM can optimize it away.
+    // array_length is zero.
     f32s: F32Parts<C>,
     #[cfg(not(feature = "compact"))] //@TODO change here, in NAN etc.
     f64s: F64Parts<C>,
@@ -479,6 +479,7 @@ where
     }
 
     /// Assert that an instance is "copy fixed". If it has been used through `OperandMututated`, then it must have been "cleared," too.
+    // @TODO rename to assert_sanitized
     #[inline]
     fn assert_copy_fixed(&self) {
         #[cfg(debug_assertions)]
@@ -588,4 +589,15 @@ where
         *self = *rhs;
         self.sanitize();
     }
+}
+
+pub fn unifloat_param_function_example<const C: UniFloatChoice>(arg: &UniFloat<C>)
+where
+    [f32; f32_parts_length(C)]: Sized,
+    [f64; f64_parts_length(C)]: Sized,
+    [twofloat::TwoFloat; twofloat_parts_length(C)]: Sized,
+    [mpfr::mpfr_t; mpfr_fixed_parts_length(C)]: Sized,
+    [MpfrLimbPart; mpfr_limb_parts_length(C)]: Sized,
+{
+
 }

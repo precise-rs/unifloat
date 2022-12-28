@@ -109,6 +109,7 @@ mod tests {
     type UniMpfr100bit = UniFloat<{ MPFR_100_BITS }>;
 
     #[test]
+    #[ignore]
     fn has_to_clear_operand_mutated_before_read() {
         let bounds = UniFloatBounds::<{ UniFloatBoundsBase::BINARY }>::new(100, -30, 30);
         let choice = bounds.to_choice(); //.most_precise_for_same_space();

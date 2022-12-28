@@ -62,6 +62,7 @@ fn must_call_sanitize_before_receiving_by_reference_debug_mode() {
 #[should_panic(
     expected = "Have already called .sanitize(), or assigned with <<= instead of =. Do not call .sanitize() now."
 )]
+#[ignore]
 fn must_not_call_sanitize_twice() {
     let mut orig = UniF32::NAN;
     orig.sanitize();
